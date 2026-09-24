@@ -1,0 +1,14 @@
+{
+  "name": "common-ground",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A persistent agent society sandbox",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.js",
+    "simulate": "node scripts/simulate.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

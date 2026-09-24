@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+world.json
+world-*.json
+common-ground-*.json
+report.json
+checkpoints/
+*.tmp-*
+.claude/
