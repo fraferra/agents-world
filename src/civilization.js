@@ -5,6 +5,8 @@ import { attemptInnovation, reflectBelief, spreadIdeas, innovationEffects, knows
 import { tradeAccess, recordTrade } from './diplomacy.js';
 import { routeFactor, plannedRoute } from './infrastructure.js';
 import { advances, canPushFrontier, proposeFrontier, completeFrontier, restoreSocietyFrontier } from './breakthroughs.js';
+import { ownsCompany } from './enterprise.js';
+import { leadsParty } from './polity.js';
 import { keptShare, addWealth, standing } from './economy.js';
 import { deliberate, recordReasoning, clearReasoning, reinforce, livePsyche, appraise, appreciate, attune, teachTechnique, converse, trustIn, techniqueFactor, knownExpert, rememberPlace, recallPlace, revisitPlace, practise, TECHNIQUES as PRACTICES } from './psyche.js';
 
@@ -94,7 +96,35 @@ export const DIET = Object.freeze(['wild', 'crops', 'game', 'fish', 'herd']);
 const TRADE_GOODS = { tools: 2, cloth: 2, remedies: 3, goods: 1.5, metal: 3, bricks: 1, hides: 1, gems: 5, coal: 1, machines: 4, electronics: 5 };
 const valueKeys = ['security', 'belonging', 'autonomy', 'mastery', 'care'];
 const roleNames = { foraging: 'Forager', farming: 'Farmer', forestry: 'Forester', mining: 'Miner', crafting: 'Artisan', scholarship: 'Scholar', medicine: 'Healer', leadership: 'Organiser' };
-const allowedRoles = new Set(['Apprentice', 'Generalist', ...Object.values(roleNames)]);
+// Occupations of a modern society, which appear as its institutions do.
+export const MODERN_ROLES = Object.freeze(['Doctor', 'Physician', 'Scientist', 'Programmer', 'Teacher', 'Engineer', 'Factory worker', 'Smith', 'Herder', 'Fisher', 'Sailor', 'Merchant', 'Official', 'Soldier', 'Politician', 'Entrepreneur', 'Pilot']);
+const allowedRoles = new Set(['Apprentice', 'Generalist', ...Object.values(roleNames), ...MODERN_ROLES]);
+
+/**
+ * What a person does for a living: their strongest skill, read through the
+ * institutions of their society and what they actually spend their days on.
+ * Party leaders are politicians and company owners entrepreneurs, whatever their skills.
+ */
+export function roleOf(sim, agent, group) {
+  if (agent.age < 16) return 'Apprentice';
+  if (leadsParty(sim, agent)) return 'Politician';
+  if (ownsCompany(sim, agent)) return 'Entrepreneur';
+  const b = group?.civilization?.buildings || {}, action = agent.mind.policy.action;
+  const atWar = group && sim.diplomacy?.relations.some(r => r.status === 'war' && (r.a === group.id || r.b === group.id));
+  if (atWar && agent.age >= 18 && agent.age <= 45 && agent.mind.riskTolerance > .6) return 'Soldier';
+  if (agent._afloat) return b.airport ? 'Pilot' : 'Sailor';
+  const best = SKILLS.reduce((x, y) => agent.skills[x] >= agent.skills[y] ? x : y);
+  if (agent.skills[best] < 20) return action === 'trade' ? 'Merchant' : 'Generalist';
+  switch (best) {
+    case 'medicine': return b.hospital ? 'Doctor' : b.clinic ? 'Physician' : 'Healer';
+    case 'scholarship': return b.datacenter ? (agent.skills.scholarship >= 50 ? 'Scientist' : 'Programmer') : b.school && action === 'teach' ? 'Teacher' : 'Scholar';
+    case 'crafting': return b.factory ? (agent.skills.crafting >= 50 ? 'Engineer' : 'Factory worker') : b.forge ? 'Smith' : 'Artisan';
+    case 'farming': return (b.pasture || 0) > (b.farm || 0) ? 'Herder' : 'Farmer';
+    case 'foraging': return action === 'fish' || b.fishery ? 'Fisher' : 'Forager';
+    case 'leadership': return action === 'trade' ? 'Merchant' : b.hall ? 'Official' : 'Organiser';
+    default: return roleNames[best];
+  }
+}
 const clamp = (value, min = 0, max = 1) => Math.min(max, Math.max(min, value));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const practiceIds = new Set(PRACTICES.map(technique => technique.id));
@@ -1138,7 +1168,7 @@ export function observeAction(sim, agent) {
   else if (agent.action === 'exploring') mind.needs.stimulation = clamp(mind.needs.stimulation - .6, 0, 100);
   if (sim.day % 30 === agent.id % 30) {
     const best = SKILLS.reduce((a, b) => agent.skills[a] >= agent.skills[b] ? a : b);
-    mind.role = agent.age < 16 ? 'Apprentice' : agent.skills[best] < 20 ? 'Generalist' : roleNames[best];
+    mind.role = roleOf(sim, agent, sim._groupMap.get(agent.groupId));
     if (mind.beliefs.abundance < .25) remember(sim, agent, 'observation', 'Food is hard to find in this area.');
     else if (agent.skills[best] >= 35) remember(sim, agent, 'practice', `I am becoming more confident in ${best}.`);
   }

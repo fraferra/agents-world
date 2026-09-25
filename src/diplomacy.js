@@ -7,6 +7,7 @@ import { startOutbreak, industry, contaminate } from './civilization.js';
 import { addWealth } from './economy.js';
 import { linkBetween, reachable } from './infrastructure.js';
 import { advances } from './breakthroughs.js';
+import { countryOf } from './polity.js';
 
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -391,7 +392,10 @@ export function advanceDiplomacy(sim) {
       else setStatus(sim, r, 'war', a, b, `${weak.name} refuses to submit to ${strong.name}.`);
       continue;
     }
-    if (r.tension > 68 && sa.adults.length >= 3 && sb.adults.length >= 3 && sim._random() < (.03 + militancy * .12) * deterrence) {
+    // Fellow members of a country settle disputes without war.
+    const compatriots = !!countryOf(sim, a) && countryOf(sim, a) === countryOf(sim, b);
+    if (compatriots) r.tension = Math.min(r.tension, 60);
+    if (!compatriots && r.tension > 68 && sa.adults.length >= 3 && sb.adults.length >= 3 && sim._random() < (.03 + militancy * .12) * deterrence) {
       setStatus(sim, r, 'war', a, b, scarcity > .4 ? 'Competition for scarce provisions and accumulated grievances overcome restraint.' : 'Militant, closed doctrines and accumulated rivalry overcome restraint.');
     } else if (r.trust > .55 && r.tension < 20 && r.status !== 'alliance') {
       setStatus(sim, r, 'alliance', a, b, 'Trust, exchange, and openness support mutual cooperation.');

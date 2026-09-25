@@ -584,7 +584,10 @@ export class WorldView {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (this.overlay === 'societies') {
-      for (const group of groups) {
+      // Countries share one colour across all their member societies.
+      const countryColor = new Map();
+      for (const country of this.snapshot.polity?.countries || []) for (const id of country.members) countryColor.set(id, country.color);
+      for (const group of groups.map(group => countryColor.has(group.id) ? { ...group, color: countryColor.get(group.id) } : group)) {
         // The shaded area is the society's actual territorial claim.
         const radius = (5 + Math.sqrt(group.members.length) * 1.2 + (group.civilization?.culture?.tier || 0) * 2) * unit;
         const gradient = ctx.createRadialGradient(group.x * unit, group.y * unit, radius * 0.1, group.x * unit, group.y * unit, radius);
@@ -1123,6 +1126,24 @@ export class WorldView {
     ctx.restore();
   }
 
+  /** Country names across their lands, legible when zoomed out. */
+  drawCountryLabels(ctx) {
+    if (this.scale > 7) return;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const country of this.snapshot.polity?.countries || []) {
+      const members = country.members.map(id => this.groups.get(id)).filter(Boolean);
+      if (!members.length) continue;
+      const x = members.reduce((sum, group) => sum + group.x, 0) / members.length, y = members.reduce((sum, group) => sum + group.y, 0) / members.length - 6;
+      if (!this.visible(x, y, 40)) continue;
+      ctx.font = `italic 600 ${15 / this.scale}px "DM Serif Display", Georgia, serif`;
+      ctx.lineWidth = 3 / this.scale; ctx.strokeStyle = 'rgba(251,247,231,.75)'; ctx.fillStyle = withAlpha(country.color, 'dd');
+      const text = country.name.toUpperCase().split('').join(' ');
+      ctx.strokeText(text, x, y); ctx.fillText(text, x, y);
+    }
+    ctx.restore();
+  }
+
   drawGroupLabels(ctx) {
     const { groups } = this.snapshot;
     const scale = this.scale;
@@ -1206,6 +1227,7 @@ export class WorldView {
       const p = this.positions.get(agent.id);
       if (p) this.drawAgent(ctx, agent, p, time);
     }
+    this.drawCountryLabels(ctx);
     this.drawGroupLabels(ctx);
     if (['relations', 'knowledge'].includes(this.overlay)) this.drawBeliefs(ctx);
     ctx.restore();

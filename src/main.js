@@ -243,6 +243,41 @@ function liveMarkup(element, markup) {
   element.scrollTop = scroll;
 }
 
+const groupName = id => snapshot.groups.find(group => group.id === id)?.name || 'a vanished society';
+const personName = id => snapshot.agents.find(agent => agent.id === id)?.name || 'someone now gone';
+const AXIS_LABELS = { collectivism: ['Free market', 'Communal'], hierarchy: ['Egalitarian', 'Authority'], innovation: ['Tradition', 'Progress'], martial: ['Peaceful', 'Martial'], piety: ['Secular', 'Devout'], expansion: ['Homeland', 'Expansion'] };
+
+/** Countries: their members, capital, government and people. */
+function renderCountries(groups) {
+  const content = $('#civilization-content'), countries = snapshot.polity?.countries || [];
+  const ids = new Set(groups.map(group => group.id));
+  const shown = civilizationSociety === 'all' ? countries : countries.filter(country => country.members.some(id => ids.has(id)));
+  const unaligned = snapshot.groups.filter(group => !countries.some(country => country.members.includes(group.id))).length;
+  $('#civilization-summary').textContent = `${number(countries.length)} ${countries.length === 1 ? 'country' : 'countries'} · ${number(unaligned)} independent societies`;
+  liveMarkup(content, shown.length ? `<div class="idea-grid">${shown.map(country => {
+    const members = country.members.map(id => snapshot.groups.find(group => group.id === id)).filter(Boolean);
+    const people = members.reduce((sum, group) => sum + group.members.length, 0);
+    const ruling = (snapshot.polity?.parties || []).find(party => party.groupId === country.capitalId && party.inPower);
+    return `<article class="idea-card"><div class="idea-meta"><span><i class="society-dot" style="background:${color(country.color)}"></i> ${escape(title(country.government))}</span><span>since ${calendar(country.founded)}</span></div><h3>${escape(country.name)}</h3><p class="idea-description">Capital ${escape(groupName(country.capitalId))} · ${number(members.length)} societies · ${number(people)} people${ruling ? ` · governed by the ${escape(ruling.name)}` : ''}</p><p class="recipe-line">${members.map(group => escape(group.name)).join(' · ')}</p></article>`;
+  }).join('')}</div>` : '<div class="empty-state idea-empty"><span>⚑</span>No countries yet.<br>Cities with colonies or allies, and overlords with tributaries, proclaim states.</div>');
+}
+
+/** Parties: ideology, support and who governs. */
+function renderParties(groups) {
+  const content = $('#civilization-content'), ids = new Set(groups.map(group => group.id));
+  const parties = (snapshot.polity?.parties || []).filter(party => ids.has(party.groupId)).sort((a, b) => b.inPower - a.inPower || b.share - a.share);
+  $('#civilization-summary').textContent = `${number(parties.length)} parties · ${number(snapshot.polity?.elections)} elections · ${number(snapshot.polity?.revolutions)} revolutions worldwide`;
+  liveMarkup(content, parties.length ? `<div class="idea-grid">${parties.map(party => `<article class="idea-card"><div class="idea-meta"><span>${party.inPower ? '★ In government' : 'Opposition'}</span><span>${escape(groupName(party.groupId))}</span></div><h3>${escape(party.name)}</h3><p class="idea-description">Led by ${escape(personName(party.leaderId))} · ${number(party.share * 100)}% support · founded ${calendar(party.founded)}${party.wins ? ` · ${number(party.wins)} ${party.wins === 1 ? 'term' : 'terms'} in power` : ''}</p><div class="doctrine-grid">${Object.entries(party.ideology).map(([key, value]) => `<div><span>${escape(AXIS_LABELS[key][value >= .5 ? 1 : 0])}</span><meter min="0" max="1" value="${Number(value)}">${number(value * 100)}%</meter></div>`).join('')}</div></article>`).join('')}</div>` : '<div class="empty-state idea-empty"><span>☷</span>No parties yet.<br>Towns of a dozen or more people with governance or a hall organise politically.</div>');
+}
+
+/** Companies: sector, owner, reach, capital and results. */
+function renderCompanies(groups) {
+  const content = $('#civilization-content'), ids = new Set(groups.map(group => group.id));
+  const companies = (snapshot.enterprise?.companies || []).filter(company => company.branches.some(id => ids.has(id))).sort((a, b) => b.capital - a.capital);
+  $('#civilization-summary').textContent = `${number(companies.length)} companies · ${number(companies.filter(company => company.branches.length >= 3).length)} corporations · ${number(snapshot.enterprise?.founded)} founded and ${number(snapshot.enterprise?.failed)} wound up worldwide`;
+  liveMarkup(content, companies.length ? `<div class="idea-grid">${companies.map(company => `<article class="idea-card"><div class="idea-meta"><span>${escape(title(company.sector))}${company.branches.length >= 3 ? ' · corporation' : ''}</span><span>since ${calendar(company.founded)}</span></div><h3>${escape(company.name)}</h3><p class="idea-description">Owned by ${escape(personName(company.ownerId))}${company.ownerId !== company.founderId ? ` · founded by ${escape(personName(company.founderId))}` : ''} · based in ${escape(groupName(company.homeId))}</p><p class="recipe-line">Operates in ${company.branches.map(id => escape(groupName(id))).join(' · ')}</p><dl class="relation-measures"><div><dt>Capital</dt><dd>${number(company.capital)}</dd></div><div><dt>Revenue</dt><dd>${number(company.revenue)}/yr</dd></div><div><dt>Profit</dt><dd>${number(company.profit)}/yr</dd></div><div><dt>Workers</dt><dd>${number(company.employees)}</dd></div></dl></article>`).join('')}</div>` : '<div class="empty-state idea-empty"><span>▤</span>No companies yet.<br>Once a society knows commerce, its ambitious and well-off found firms.</div>');
+}
+
 /** Technologies no one wrote in advance: research at the frontier, then every breakthrough made. */
 function renderBreakthroughs(groups) {
   const content = $('#civilization-content'), list = snapshot.breakthroughs?.list || [];
@@ -271,6 +306,13 @@ function economyMarkup(group) {
   const max = Math.max(...history, 1), points = history.map((value, index) => `${history.length === 1 ? 50 : index / (history.length - 1) * 100},${28 - value / max * 26}`).join(' ');
   const years = Math.min(10, history.length - 1);
   return `<div class="economy-line"><div><strong>${number(economy.output)}</strong><span>a year · ${decimal(economy.output / Math.max(1, group.members.length))} per person${years ? ` · ${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))}% over ${number(years)} ${years === 1 ? 'year' : 'years'}` : ''}</span></div><svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Yearly output"><polyline points="${points}" fill="none" stroke="${change >= 0 ? '#7f9d5f' : '#b27a5c'}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>`;
+}
+
+/** " · part of X · governed by Y" for a society row. */
+function politicsMarkup(group) {
+  const country = (snapshot.polity?.countries || []).find(entry => entry.members.includes(group.id));
+  const ruling = (snapshot.polity?.parties || []).find(party => party.groupId === group.id && party.inPower);
+  return `${country ? ` · ${country.capitalId === group.id ? 'capital of' : 'part of'} ${escape(country.name)}` : ''}${ruling ? ` · governed by the ${escape(ruling.name)}` : ''}`;
 }
 
 /** " · pays tribute to X" and/or " · rules N tributaries" for a society row. */
@@ -420,7 +462,7 @@ function renderObservation() {
       const doctrine = (snapshot.innovation?.discoveries || []).find(idea => idea.id === civilization?.doctrine);
       const buildings = Object.values(civilization?.buildings || {}).reduce((sum, count) => sum + count, 0);
       const culture = civilization?.culture, leader = snapshot.agents.find(agent => agent.id === culture?.leaderId);
-      return `<article class="society-row"><div><i class="society-dot" style="background:${color(group.color)}"></i><h3>${escape(group.name)}</h3><span class="member-count">${culture ? `${escape(TIERS[culture.tier])} · ` : ''}${group.members.length} people</span></div><p>${escape(group.culture)}${leader ? ` · led by ${escape(leader.name)}` : ''}${culture?.parentId ? ` · colony of ${escape(snapshot.groups.find(other => other.id === culture.parentId)?.name || 'a vanished society')}` : ''}${tributeMarkup(group)}<br>${number(group.shelters)} shelters · ${number(group.food)} food · ${number(group.wood)} wood<br>${number(civilization?.technologies?.length)} foundations · ${number(civilization?.ideas?.length)} adopted ideas · ${number(buildings)} buildings${civilization?.economy?.history.length ? ` · output ${number(civilization.economy.output)} a year` : ''}${doctrine ? `<br>◈ ${escape(doctrine.name)}` : ''}</p><div class="society-research">${researchMarkup(group)}</div><div class="society-actions"><button class="text-button" data-person="${Number(group.members[0])}">Meet a member ↗</button><button class="text-button" data-society="${group.id}">Explore ideas ↗</button></div></article>`;
+      return `<article class="society-row"><div><i class="society-dot" style="background:${color(group.color)}"></i><h3>${escape(group.name)}</h3><span class="member-count">${culture ? `${escape(TIERS[culture.tier])} · ` : ''}${group.members.length} people</span></div><p>${escape(group.culture)}${leader ? ` · led by ${escape(leader.name)}` : ''}${culture?.parentId ? ` · colony of ${escape(snapshot.groups.find(other => other.id === culture.parentId)?.name || 'a vanished society')}` : ''}${tributeMarkup(group)}${politicsMarkup(group)}<br>${number(group.shelters)} shelters · ${number(group.food)} food · ${number(group.wood)} wood<br>${number(civilization?.technologies?.length)} foundations · ${number(civilization?.ideas?.length)} adopted ideas · ${number(buildings)} buildings${civilization?.economy?.history.length ? ` · output ${number(civilization.economy.output)} a year` : ''}${doctrine ? `<br>◈ ${escape(doctrine.name)}` : ''}</p><div class="society-research">${researchMarkup(group)}</div><div class="society-actions"><button class="text-button" data-person="${Number(group.members[0])}">Meet a member ↗</button><button class="text-button" data-society="${group.id}">Explore ideas ↗</button></div></article>`;
     }).join('') || '<div class="empty-state"><span>⌂</span>No societies yet.<br>Connections take time. Watch for people gathering and sharing.</div>');
     $('#deck-footer-text').textContent = `${number(snapshot.agents.filter(a => a.groupId === null).length)} independent individuals`;
   } else if (tab === 'conversations') {
@@ -461,6 +503,9 @@ function renderCivilization() {
     return;
   }
   if (civilizationTab === 'breakthroughs') { renderBreakthroughs(groups); return; }
+  if (civilizationTab === 'countries') { renderCountries(groups); return; }
+  if (civilizationTab === 'parties') { renderParties(groups); return; }
+  if (civilizationTab === 'companies') { renderCompanies(groups); return; }
   if (civilizationTab === 'knowledge') {
     const projects = groups.filter(group => group.civilization?.project);
     $('#civilization-summary').textContent = `${number(projects.length)} active ${projects.length === 1 ? 'project' : 'projects'} · ${number(snapshot.stats.researchCompleted)} discoveries completed worldwide`;
