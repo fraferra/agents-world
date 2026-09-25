@@ -230,6 +230,40 @@ function countries(sim) {
   }
 }
 
+/** Holds an election now, if the society has parties (used by acts of god). Returns the winner. */
+export function callElection(sim, group) {
+  const current = partiesOf(sim, group);
+  if (!current.length) return null;
+  const winner = [...current].sort((a, b) => b.support - a.support)[0];
+  for (const party of current) { party.inPower = party === winner; party.lastElection = sim.day; }
+  winner.since = sim.day; winner.wins++; sim.polity.elections++;
+  const leader = sim._agentMap.get(winner.leaderId);
+  if (leader && leader.groupId === group.id) { group.civilization.culture.leaderId = leader.id; group.civilization.culture.leaderSince = sim.day; }
+  sim._event('group', `A snap election in ${group.name} brings the ${winner.name} to power (${Math.round(winner.share * 100)}%).`, { groupId: group.id });
+  return winner;
+}
+
+/** Proclaims a country around a society with its kin, allies and tributaries (used by acts of god). */
+export function proclaim(sim, group) {
+  if (countryOf(sim, group)) return countryOf(sim, group);
+  const members = [group, ...sim.groups.filter(other => other !== group && !countryOf(sim, other) && (other.civilization.culture?.parentId === group.id || overlordOf(sim, other) === group || relationBetween(sim, group, other)?.status === 'alliance'))];
+  const kind = tributariesOf(sim, group).length >= 2 ? 'empire' : members.length >= 3 ? 'union' : 'state', government = governmentOf(group, kind);
+  const country = { id: `country-${sim.polity.nextCountry++}`, name: countryName(sim, group, government), capitalId: group.id, members: members.map(member => member.id), government, founded: sim.day, color: group.color };
+  sim.polity.countries.push(country);
+  sim._event('group', `${country.name} is proclaimed, uniting ${country.members.length} ${country.members.length === 1 ? 'society' : 'societies'} with ${group.name} as its capital.`, { groupId: group.id });
+  return country;
+}
+
+/** A society leaves its country (used by acts of god); a capital leaving dissolves it. */
+export function secede(sim, group) {
+  const country = countryOf(sim, group);
+  if (!country) return false;
+  if (country.capitalId === group.id) sim.polity.countries = sim.polity.countries.filter(other => other !== country);
+  else country.members = country.members.filter(id => id !== group.id);
+  sim._event('group', country.capitalId === group.id ? `${country.name} is dissolved by its own capital.` : `${group.name} declares independence from ${country.name}.`, { groupId: group.id });
+  return true;
+}
+
 export function polityStats(sim) {
   const p = sim.polity;
   return { parties: p?.parties.length || 0, countries: p?.countries.length || 0, elections: p?.elections || 0, revolutions: p?.revolutions || 0 };

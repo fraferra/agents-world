@@ -85,13 +85,7 @@ export function advanceEnterprise(sim) {
       const [sector] = options[Math.floor(sim._random() * options.length)];
       const capital = round(agent.wealth * .6);
       agent.wealth = round(agent.wealth - capital);
-      const company = { id: `firm-${sim.enterprise.nextId++}`, name: nameFor(sim, agent, sector, group), sector, founderId: agent.id, ownerId: agent.id, homeId: group.id, branches: [group.id],
-        capital, revenue: 0, profit: 0, employees: 0, founded: sim.day, losses: 0, history: [], ledger: {} };
-      company.ledger[group.id] = round(sectorValue(civ, sector));
-      sim.enterprise.companies.push(company);
-      sim.enterprise.founded++;
-      const kind = SECTORS[sector].name.toLowerCase();
-      sim._event('industry', `${agent.name} founds ${company.name}, ${/^[aeiou]/.test(kind) ? 'an' : 'a'} ${kind} firm in ${group.name}.`, { groupId: group.id, agentId: agent.id });
+      foundCompany(sim, agent, group, sector, capital);
       break;
     }
   }
@@ -102,6 +96,18 @@ export function advanceEnterprise(sim) {
     if (!company.branches.includes(company.homeId)) company.homeId = company.branches[0];
     return true;
   });
+}
+
+/** Registers a new firm owned by `agent` in `group`. */
+export function foundCompany(sim, agent, group, sector, capital) {
+  const company = { id: `firm-${sim.enterprise.nextId++}`, name: nameFor(sim, agent, sector, group), sector, founderId: agent.id, ownerId: agent.id, homeId: group.id, branches: [group.id],
+    capital: round(capital), revenue: 0, profit: 0, employees: 0, founded: sim.day, losses: 0, history: [], ledger: {} };
+  company.ledger[group.id] = round(sectorValue(group.civilization, sector));
+  sim.enterprise.companies.push(company);
+  sim.enterprise.founded++;
+  const kind = SECTORS[sector].name.toLowerCase();
+  sim._event('industry', `${agent.name} founds ${company.name}, ${/^[aeiou]/.test(kind) ? 'an' : 'a'} ${kind} firm in ${group.name}.`, { groupId: group.id, agentId: agent.id });
+  return company;
 }
 
 function operate(sim, company) {

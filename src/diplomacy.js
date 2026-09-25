@@ -67,6 +67,15 @@ export function establishKinship(sim, parent, colony) {
 /** The standing relation between two societies, if they have met. */
 export function relationBetween(sim, a, b) { return a && b && a.id !== b.id ? relation(sim, a, b) || null : null; }
 
+/** Sets the relation between two societies directly (used by acts of god), with a reason for the chronicle. */
+export function declare(sim, a, b, status, reason) {
+  const r = relation(sim, a, b, true);
+  if (status === 'war') { r.tension = Math.max(r.tension, 85); r.trust = Math.min(r.trust, -.4); }
+  else { r.tension = Math.min(r.tension, 20); r.trust = Math.max(r.trust, .2); }
+  setStatus(sim, r, status, a, b, reason);
+  return r;
+}
+
 /** Whether two societies are at war; marriages and visits stop between enemies. */
 export function atWar(sim, a, b) { return !!a && !!b && a.id !== b.id && relation(sim, a, b)?.status === 'war'; }
 

@@ -172,7 +172,7 @@ test('strict portable innovation state validates lineage, costs, accounting and 
     raw => { raw.discoveries[0].recipe.method = 'infinite food'; },
     raw => { raw.discoveries[0].effects.food = Infinity; },
     raw => { raw.trials++; },
-    raw => { raw.nextId += 1; },
+    raw => { raw.nextId = 1; },
     raw => { raw.discoveries[1].generation += 1; },
     raw => { raw.discoveries[2].doctrine.openness = -1; },
   ]) {

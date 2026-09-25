@@ -296,7 +296,8 @@ export class WorldView {
     const { width, height, tiles } = this.snapshot;
     // Bound memory and initial paint time even on the largest map. Illustration
     // detail scales with the raster; all interactions remain in world units.
-    const rasterTile = Math.min(TILE, Math.max(4, Math.floor(Math.sqrt(2500000 / (width * height)))));
+    // Each cached layer (terrain, land mask, land use, overlay) is one raster of this size.
+    const rasterTile = Math.min(TILE, Math.max(3, Math.floor(Math.sqrt(1600000 / (width * height)))));
     this.rasterTile = rasterTile;
     const canvas = canvasOf(width * rasterTile, height * rasterTile);
     const ctx = canvas.getContext('2d');
@@ -574,7 +575,7 @@ export class WorldView {
     const key = `${this.overlay}:${day}:${groups.length}`;
     if (key === this.overlayKey) return;
     this.overlayKey = key;
-    if (this.overlay === 'natural' || this.overlay === 'knowledge') return;
+    if (this.overlay === 'natural' || this.overlay === 'knowledge') { this.overlayCanvas = null; return; }
     const unit = this.rasterTile;
     const canvas = this.overlayCanvas || canvasOf(width * unit, height * unit);
     if (canvas.width !== width * unit || canvas.height !== height * unit) {

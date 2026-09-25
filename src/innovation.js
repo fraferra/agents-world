@@ -93,9 +93,20 @@ function remember(sim, agent, type, text) {
   if (agent.mind.memories.length > 8) agent.mind.memories.length = 8;
 }
 
+// People carry only so many designs in mind, societies only so many in use; the oldest are forgotten.
+export const PERSON_DESIGNS = 60, SOCIETY_DESIGNS = 150;
+function forgetOldest(sim, holder, limit, keep = null) {
+  const index = indexed(sim).ideas;
+  let designs = holder.ideas.filter(id => index.get(id)?.kind === 'invention').length;
+  if (designs <= limit) return;
+  // A new array, so membership caches rebuild.
+  holder.ideas = holder.ideas.filter(id => { if (designs > limit && id !== keep && index.get(id)?.kind === 'invention') { designs--; return false; } return true; });
+}
+
 function learn(sim, agent, idea, conviction = .55) {
   if (knowsIdea(agent, idea.id)) return false;
   agent.ideas.push(idea.id);
+  if (idea.kind === 'invention') forgetOldest(sim, agent, PERSON_DESIGNS, idea.id);
   if (idea.kind === 'belief') agent.convictions[idea.id] = clamp(conviction);
   if (agent.mind) {
     agent.mind.needs.stimulation = clamp(agent.mind.needs.stimulation - 10, 0, 100);
@@ -108,6 +119,26 @@ function learn(sim, agent, idea, conviction = .55) {
 function adopt(sim, group, idea) {
   if (knowsIdea(group.civilization, idea.id)) return;
   group.civilization.ideas.push(idea.id);
+  if (idea.kind === 'invention') forgetOldest(sim, group.civilization, SOCIETY_DESIGNS, idea.id);
+}
+
+/**
+ * Yearly: designs no one holds any more, and that nothing still refers to (a
+ * running experiment, a remembered conversation, a later design's lineage in
+ * use), are dropped from the registry. The world forgets what no one knows.
+ */
+function pruneRegistry(sim) {
+  const held = new Set();
+  for (const agent of sim.agents) for (const id of agent.ideas || []) held.add(id);
+  for (const group of sim.groups) {
+    for (const id of group.civilization?.ideas || []) held.add(id);
+    if (group.civilization?.doctrine) held.add(group.civilization.doctrine);
+    for (const id of group.civilization?.experiment?.hypothesis.parentIds || []) held.add(id);
+  }
+  for (const message of sim.civilization?.messages || []) if (message.ideaId) held.add(message.ideaId);
+  const before = sim.innovation.discoveries.length;
+  sim.innovation.discoveries = sim.innovation.discoveries.filter(idea => held.has(idea.id));
+  if (sim.innovation.discoveries.length !== before) cache.delete(sim);
 }
 
 function weighted(sim, choices) {
@@ -414,6 +445,7 @@ function ideaEffects(sim, group) {
 
 export function advanceInnovation(sim) {
   if (!sim.innovation) initializeInnovation(sim);
+  if (sim.day % 360 === 180) pruneRegistry(sim);
   const index = indexed(sim).ideas;
   for (const group of sim.groups) {
     ensure(sim, null, group);
@@ -484,11 +516,13 @@ function draft(raw) {
   if (result.parentIds.length > 2) invalid('parent count');
   return result;
 }
-function lineage(value, registry) {
-  const parents = value.parentIds.map(id => registry.get(id));
-  if (parents.some(parent => !parent || parent.kind !== value.kind)) invalid('parent reference');
-  const generation = parents.length ? Math.max(...parents.map(parent => parent.generation)) + 1 : 0;
-  if (value.generation !== generation) invalid('lineage generation');
+function lineage(value, registry, ownId = null) {
+  // Parents are always older. Forgotten ancestors may be missing; those still known must fit.
+  if (value.parentIds.some(id => typeof id !== 'string' || !/^idea-[1-9]\d*$/.test(id) || (ownId !== null && Number(id.slice(5)) >= ownId))) invalid('parent reference');
+  const parents = value.parentIds.map(id => registry.get(id)).filter(Boolean);
+  if (parents.some(parent => parent.kind !== value.kind)) invalid('parent reference');
+  const deepest = parents.length ? Math.max(...parents.map(parent => parent.generation)) + 1 : 0;
+  if (parents.length === value.parentIds.length ? value.generation !== deepest : value.generation < deepest) invalid('lineage generation');
 }
 
 export function restoreInnovation(raw, sim) {
@@ -503,17 +537,18 @@ export function restoreInnovation(raw, sim) {
     const id = ideaId(value.id), number = Number(id.slice(5));
     if (number <= previousId || number >= state.nextId) invalid('registry ordering');
     const design = draft(value);
-    lineage(design, index);
+    lineage(design, index, number);
     const e = object(value.evidence, 'evidence');
     const evidence = { trials: num(e.trials, 'evidence trials', 0, state.trials, true), successes: num(e.successes, 'evidence successes', 0, state.successes, true), failures: num(e.failures, 'evidence failures', 0, state.failures, true), quality: num(e.quality, 'quality', 0, 1) };
     if (evidence.trials !== evidence.successes + evidence.failures || (design.kind === 'invention' ? evidence.successes !== 1 : evidence.trials !== 0 || evidence.quality !== 0)) invalid('evidence accounting');
     const idea = { id, ...design, createdDay: num(value.createdDay, 'creation day', 0, sim.day, true), founderId: num(value.founderId, 'founder ID', 1, sim.nextAgentId - 1, true), originGroupId: num(value.originGroupId, 'origin society ID', 1, sim.nextGroupId - 1, true), evidence };
-    if (idea.createdDay < previousDay || design.parentIds.some(parent => index.get(parent).createdDay > idea.createdDay)) invalid('creation order');
+    if (idea.createdDay < previousDay || design.parentIds.some(parent => (index.get(parent)?.createdDay ?? -1) > idea.createdDay)) invalid('creation order');
     previousId = number; previousDay = idea.createdDay;
     state.discoveries.push(idea); index.set(id, idea);
   }
-  if (state.trials !== state.failures + state.successes || state.successes !== state.discoveries.filter(idea => idea.kind === 'invention').length) invalid('trial accounting');
-  if (state.nextId !== previousId + 1 || state.discoveries.length !== previousId) invalid('registry ID sequence');
+  // Forgotten designs leave the registry, so it may hold fewer inventions than were ever made.
+  if (state.trials !== state.failures + state.successes || state.successes < state.discoveries.filter(idea => idea.kind === 'invention').length) invalid('trial accounting');
+  if (previousId >= state.nextId) invalid('registry ID sequence');
   if (state.discoveries.reduce((sum, idea) => sum + idea.evidence.failures, 0) > state.failures) invalid('failure accounting');
   return state;
 }
