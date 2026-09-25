@@ -560,6 +560,47 @@ function herd(sim, agent, group) {
   outcome = food > .05 ? clamp(food, .2, 1) : -.4;
 }
 
+/**
+ * Hunger that fields can answer. In a band that knows cultivation but has no farm,
+ * a couple of the able hungry build the first one (or fetch its timber and stone);
+ * in a farming band, the hungry fill the day's farming quota and keep up to half
+ * their harvest for their household. Returns true if the day was spent so.
+ */
+function surviveByFarming(sim, agent, group, youngChildren) {
+  const civ = group.civilization;
+  if (!civ || agent.age < 14 || agent.energy < 30 || agent.health < 45 || agent.hunger > 60 || !civ.technologies.includes('cultivation')) return false;
+  if (sim._civilAssignments?.day !== sim.day) sim._civilAssignments = { day: sim.day, farms: new Map() };
+  const count = key => sim._civilAssignments.farms.get(key) || 0, bump = key => sim._civilAssignments.farms.set(key, count(key) + 1);
+  const steps = ['Reach the fields', 'Grow food', 'Feed the family'];
+  if (!civ.buildings.farm) {
+    if (count(`first-farm:${group.id}`) >= 2) return false;
+    bump(`first-farm:${group.id}`);
+    const cost = BUILDINGS.farm.cost;
+    setPolicy(sim, agent, 'build', 'Clear and plant a first field, so the band need not live off wild food.', [{ action: 'build', score: 100 }], steps);
+    clearReasoning(agent);
+    if (distance(agent, group) >= 9) { sim._move(agent, group); agent.action = 'heading home to plant a field'; return true; }
+    outcome = null;
+    if (group.wood >= cost.wood && civ.stock.stone >= cost.stone) execute(sim, agent, group, { action: 'build', target: 'farm' });
+    else gatherMaterial(sim, agent, group, group.wood < cost.wood ? 'wood' : 'stone');
+    return true;
+  }
+  const farmers = count(group.id);
+  const farmYield = Math.max(.3, .6 * (civ.technologies.includes('irrigation') ? 1.4 : 1) * facilities(group).harvest * industry(group).mechanization);
+  if (farmers >= Math.min(civ.buildings.farm * 4, Math.ceil(group.members.length * .23 / farmYield))) return false;
+  setPolicy(sim, agent, 'farm', youngChildren ? 'Grow food to feed the children.' : 'Grow food for myself and the community.', [{ action: 'farm', score: 100 }], steps);
+  clearReasoning(agent);
+  sim._civilAssignments.farms.set(group.id, farmers + 1);
+  if (distance(agent, group) >= 9) { sim._move(agent, group); agent.action = 'heading to the fields'; return true; }
+  const store = group.food;
+  outcome = null;
+  execute(sim, agent, group, { action: 'farm', steps });
+  // A hungry farmer keeps up to half of what they brought in.
+  const harvested = Math.max(0, group.food - store), share = Math.min(harvested * .5, group.food, 5 - agent.inventory.food);
+  if (share > 0) { group.food -= share; agent.inventory.food += share; }
+  if (outcome !== null) reinforce(sim, agent, 'farm', outcome);
+  return true;
+}
+
 /** Called before basic behavior. Basic survival retains absolute priority. */
 export function considerCivilization(sim, agent, group) {
   const mind = agent.mind || initializeMind(sim, agent).mind;
@@ -569,6 +610,7 @@ export function considerCivilization(sim, agent, group) {
   const partner = agent.partnerId ? sim._agentMap.get(agent.partnerId) : null;
   const foodSecurity = agent.inventory.food + sharedMeals + (partner && distance(agent, partner) < 8 ? partner.inventory.food * .5 : 0);
   if (agent.age < 10 || agent.hunger > 26 || agent.energy < 43 || agent.health < 45 || foodSecurity < (youngChildren ? 1.65 : .85)) {
+    if (group && surviveByFarming(sim, agent, group, youngChildren)) return true;
     const reason = agent.age < 10 ? 'Stay near family and learn from daily life.' : agent.hunger > 26 || foodSecurity < (youngChildren ? 1.65 : .85) ? (youngChildren ? 'Keep enough food to support the children.' : 'Food security matters more than long-term work right now.') : agent.energy < 43 ? 'Energy is too low for demanding work; attend to everyday needs.' : 'Recover health before returning to work.';
     setPolicy(sim, agent, 'survive', reason, [{ action: 'survive', score: 110 }], ['Meet immediate needs', 'Return to longer-term plans']);
     clearReasoning(agent);
@@ -580,6 +622,9 @@ export function considerCivilization(sim, agent, group) {
     return false;
   }
   const civ = group.civilization || initializeSociety(group).civilization;
+  // Daily head-counts per society for work that only needs a few hands.
+  if (sim._civilAssignments?.day !== sim.day) sim._civilAssignments = { day: sim.day, farms: new Map() };
+  const assigned = kind => sim._civilAssignments.farms.get(`${kind}:${group.id}`) || 0;
   chooseProject(sim, group);
   const choices = [], stock = civ.stock, effects = innovationEffects(sim, group);
   const building = daily(sim, 'building', group, builtCount(group) * 64 + civ.technologies.length, () => desiredBuilding(sim, group));
@@ -616,7 +661,8 @@ export function considerCivilization(sim, agent, group) {
     const experiment = civ.experiment;
     const trialCost = experiment?.hypothesis.cost;
     const ready = !trialCost || Object.entries(trialCost).every(([key, value]) => (key === 'food' ? group.food : available(stock, group, key)) >= value);
-    if (ready) add('invent', (civ.project ? 17 : 23) + mind.values.mastery * 17 + agent.traits.curiosity * 16 + agent.skills.scholarship * .12 + mind.needs.stimulation * .15 + mind.riskTolerance * 6 + (experiment ? 8 * experiment.progress / experiment.required : 0), experiment ? `Test the community’s proposed ${experiment.hypothesis.name.toLowerCase()}.` : 'Combine available materials and existing ideas into an untested design.', ['Propose a design', 'Contribute labor and materials', 'Test, revise, and share the result']);
+    // Experiments need a few inventors, not the whole community.
+    if (ready) { if (assigned('invent') < Math.max(2, group.members.length * .15)) add('invent', (civ.project ? 17 : 23) + mind.values.mastery * 17 + agent.traits.curiosity * 16 + agent.skills.scholarship * .12 + mind.needs.stimulation * .15 + mind.riskTolerance * 6 + (experiment ? 8 * experiment.progress / experiment.required : 0), experiment ? `Test the community’s proposed ${experiment.hypothesis.name.toLowerCase()}.` : 'Combine available materials and existing ideas into an untested design.', ['Propose a design', 'Contribute labor and materials', 'Test, revise, and share the result']); }
     else {
       if (group.wood < trialCost.wood) add('lumber', 48 + agent.skills.forestry * .12, 'The experiment needs timber for a real trial.', ['Gather timber', 'Supply the experiment']);
       if (stock.stone < trialCost.stone) add('quarry', 48 + agent.skills.mining * .12, 'The experiment needs stone for a real trial.', ['Find stone', 'Supply the experiment']);
@@ -664,7 +710,12 @@ export function considerCivilization(sim, agent, group) {
   // every other occupation out of the policy even when there are surplus workers.
   if (sim._civilAssignments?.day !== sim.day) sim._civilAssignments = { day: sim.day, farms: new Map() };
   const farmWorkers = sim._civilAssignments.farms.get(group.id) || 0;
-  if (civ.buildings.farm && farmWorkers < civ.buildings.farm * 4 && group.food < group.members.length * 2 && agent.age >= 12) add('farm', 27 + Math.max(0, 1.5 - group.food / Math.max(1, group.members.length)) * 14 + mind.values.security * 12 + agent.skills.farming * .22, 'A more dependable harvest will keep the community fed.', ['Reach the farms', 'Tend and harvest crops', 'Share the harvest']);
+  // Farming duty: until enough hands are in the fields to feed everyone (at what a farm day
+  // yields with this society's methods), the fields come before other work.
+  const farmYield = Math.max(.3, .6 * (civ.technologies.includes('irrigation') ? 1.4 : 1) * facilities(group).harvest * industry(group).mechanization);
+  const farmersNeeded = Math.min(civ.buildings.farm * 4, Math.ceil(members * .23 / farmYield));
+  const duty = farmWorkers < farmersNeeded && group.food < members * 1.5 ? 30 : 0;
+  if (civ.buildings.farm && farmWorkers < civ.buildings.farm * 4 && group.food < group.members.length * 2 && agent.age >= 12) add('farm', 27 + duty + Math.max(0, 1.5 - group.food / Math.max(1, group.members.length)) * 14 + mind.values.security * 12 + agent.skills.farming * .22, 'A more dependable harvest will keep the community fed.', ['Reach the farms', 'Tend and harvest crops', 'Share the harvest']);
   // Food beyond farms: hunting and fishing draw on living stocks; herds graze inedible grass.
   if (agent.age >= 14 && group.food < members * 2) {
     const foodNeed = Math.max(0, 1.5 - group.food / Math.max(1, members)) * 14;
@@ -711,7 +762,7 @@ export function considerCivilization(sim, agent, group) {
   }
   // Pioneers and the restlessly curious scout distant land; what they find guides colonies.
   const drive = Math.max(agent.psyche?.expansion ?? 0, agent.traits.curiosity * .7 + mind.needs.stimulation / 100 * .3);
-  if (agent.age >= 16 && agent.age < 55 && drive > .35) add('pioneer', 6 + drive * 30 + (civ.culture?.pressure || 0) * 20, 'Scout distant land where our people could settle.', ['Travel beyond our lands', 'Remember good sites', 'Report back'], null);
+  if (agent.age >= 16 && agent.age < 55 && drive > .35 && assigned('pioneer') < Math.max(1, group.members.length * .08)) add('pioneer', 6 + drive * 30 + (civ.culture?.pressure || 0) * 20, 'Scout distant land where our people could settle.', ['Travel beyond our lands', 'Remember good sites', 'Report back'], null);
   const neighbors = sim._neighbors(agent, 7);
   // Someone who knows fewer ideas must lack at least one; only equals need a full comparison.
   const lacksIdea = other => (agent.ideas || []).length > (other.ideas || []).length || (agent.ideas || []).some(id => !knowsIdea(other, id));
@@ -758,7 +809,7 @@ export function considerCivilization(sim, agent, group) {
   if (handled === false) return false;
   if (choice.action === 'farm') sim._civilAssignments.farms.set(group.id, farmWorkers + 1);
   if (choice.action === 'hunt') sim._civilAssignments.farms.set(`hunt:${group.id}`, (sim._civilAssignments.farms.get(`hunt:${group.id}`) || 0) + 1);
-  if (choice.action === 'trade') sim._civilAssignments.farms.set(`trade:${group.id}`, (sim._civilAssignments.farms.get(`trade:${group.id}`) || 0) + 1);
+  for (const kind of ['trade', 'invent', 'pioneer']) if (choice.action === kind) sim._civilAssignments.farms.set(`${kind}:${group.id}`, assigned(kind) + 1);
   mind.needs.purpose = clamp(mind.needs.purpose - 1.6, 0, 100);
   mind.needs.stimulation = clamp(mind.needs.stimulation - (['research', 'invent', 'reflect', 'study', 'teach'].includes(choice.action) ? 3 : .5), 0, 100);
   return true;
