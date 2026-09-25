@@ -765,7 +765,7 @@ export class Simulation {
         }
       }
     }
-    if (this.day % 30 === 15) this._consolidate();
+    if (this.day % 30 === 15) { this._consolidate(); this._urbanize(); }
     for (let i = this.groups.length - 1; i >= 0; i--) {
       const group = this.groups[i];
       if (group.members.length === 0 || (group.members.length < 2 && this.day - group._foundedDay > 180)) {
@@ -805,6 +805,42 @@ export class Simulation {
         agent._wanderX = best.x; agent._wanderY = best.y;
       }
       this._event('group', `The last people of ${band.name} join ${best.name}.`, { groupId: best.id });
+    }
+  }
+
+  /**
+   * Urbanisation: working-age people leave poorer bands for a thriving town
+   * within reach (or joined by road, rail or sea), above all an industrial one,
+   * as the countryside emptied into factory towns. Output per person measures
+   * how well a place lives; the move is individual, with partner and children.
+   */
+  _urbanize() {
+    const perHead = (group) => (group.civilization.economy?.output > 0 ? group.civilization.economy.output : 0) / Math.max(1, group.members.length);
+    const towns = this.groups.filter((group) => group.members.length >= 12 && group.civilization.economy?.history.length >= 2);
+    if (!towns.length) return;
+    for (const band of [...this.groups]) {
+      const home = perHead(band);
+      for (const id of [...band.members]) {
+        const agent = this._agentMap.get(id);
+        if (!agent || agent.age < 16 || agent.age > 40 || agent.groupId !== band.id || agent.partnerId && this._agentMap.get(agent.partnerId)?.age > 45) continue;
+        if (this._random() > 0.03) continue;
+        let best = null, bestScore = 0;
+        for (const town of towns) {
+          if (town === band || atWar(this, band, town)) continue;
+          const route = linkBetween(this, band, town), distance = Math.sqrt(distance2(band, town));
+          if (distance > (route ? 90 : 35)) continue;
+          const industrial = town.civilization.buildings.factory || town.civilization.buildings.railway ? 1.4 : 1;
+          const pull = perHead(town) * industrial / Math.max(1, home) - 1.5 - distance / 60 + (route ? 0.3 : 0);
+          if (pull > bestScore) { bestScore = pull; best = town; }
+        }
+        if (!best || this._random() > Math.min(0.6, bestScore * 0.25) * (0.5 + agent.psyche.personality.openness)) continue;
+        this._joinGroup(agent, best);
+        agent._wanderX = best.x; agent._wanderY = best.y;
+        const partner = this._agentMap.get(agent.partnerId);
+        if (partner && partner.groupId === band.id) { this._joinGroup(partner, best); partner._wanderX = best.x; partner._wanderY = best.y; }
+        appraise(this, agent, 'belonging', { text: `Moved to ${best.name} for a better life.` });
+        if (best.members.length % 10 === 0) this._event('migration', `${best.name} draws newcomers from the countryside; it now has ${best.members.length} people.`, { groupId: best.id });
+      }
     }
   }
 

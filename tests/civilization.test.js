@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Simulation } from '../src/simulation.js';
-import { TECHNOLOGIES, SKILLS, BUILDINGS, initializeSociety, considerCivilization, communicate, observeAction, advanceCivilization } from '../src/civilization.js';
+import { TECHNOLOGIES, SKILLS, BUILDINGS, RICHNESS, initializeSociety, considerCivilization, communicate, observeAction, advanceCivilization } from '../src/civilization.js';
 
 function community() {
   const sim = new Simulation({ seed: 'laboratory', population: 8, size: 'compact' });
@@ -136,7 +136,8 @@ test('mining depletes finite mineral deposits and contributes gathered material 
   assert.equal(agent.mind.policy.action, 'quarry');
   assert.ok(tile.stone < 1);
   assert.ok(group.civilization.stock.stone > 0);
-  assert.ok(Math.abs(tile.stone + group.civilization.stock.stone - 1) < 1e-10);
+  // Each unit of deposit yields RICHNESS.stone units of stone: material is conserved at that rate.
+  assert.ok(Math.abs(tile.stone + group.civilization.stock.stone / RICHNESS.stone - 1) < 1e-10);
 });
 
 test('granaries reduce actual spoilage without creating same-day food', () => {

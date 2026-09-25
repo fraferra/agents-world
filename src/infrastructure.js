@@ -64,18 +64,29 @@ function partners(sim, group) {
   return list.sort((x, y) => y.weight - x.weight || x.range - y.range);
 }
 
-/** Monthly, staggered: each society may build or upgrade one route it can afford. */
-function build(sim, group) {
+/** The next route a society means to build: to its most important partner still unconnected. */
+export function plannedRoute(sim, group) {
   const civ = group.civilization, known = civ.technologies;
   const canRail = known.includes('railways') && civ.buildings.railway > 0, canRoad = known.includes('masonry');
-  if (!canRail && !canRoad) return;
+  if (!canRail && !canRoad) return null;
   for (const { other, range } of partners(sim, group)) {
     const existing = linkBetween(sim, group, other);
     const kind = canRail && range <= ROUTES.rail.range && existing?.kind !== 'rail' ? 'rail' : canRoad && !existing && range <= ROUTES.road.range ? 'road' : null;
     if (!kind) continue;
-    const length = Math.max(1, range), cost = ROUTES[kind].cost;
-    if (!Object.entries(cost).every(([key, perTile]) => stock(group, key) >= perTile * length)) continue;
-    for (const [key, perTile] of Object.entries(cost)) spend(group, key, perTile * length);
+    const length = Math.max(1, range);
+    return { other, kind, existing, length, cost: Object.fromEntries(Object.entries(ROUTES[kind].cost).map(([key, perTile]) => [key, perTile * length])) };
+  }
+  return null;
+}
+
+/** Monthly, staggered: each society builds its planned route once it has gathered the materials. */
+function build(sim, group) {
+  const plan = plannedRoute(sim, group);
+  if (!plan) return;
+  const { other, kind, existing, length, cost } = plan;
+  {
+    if (!Object.entries(cost).every(([key, amount]) => stock(group, key) >= amount)) return;
+    for (const [key, amount] of Object.entries(cost)) spend(group, key, amount);
     // Clearing the way: woodland along the route is cut back.
     alongRoute(sim, group, other, tile => { tile.wood *= kind === 'rail' ? .3 : .5; });
     const lo = Math.min(group.id, other.id), hi = Math.max(group.id, other.id);
@@ -83,7 +94,6 @@ function build(sim, group) {
     else sim.infrastructure.links.push({ a: lo, b: hi, kind, day: sim.day, builder: group.id });
     if (kind === 'rail') sim.infrastructure.railsBuilt++; else sim.infrastructure.roadsBuilt++;
     sim._event('industry', existing ? `${group.name} lays a railway along its road to ${other.name}.` : `${group.name} builds a ${ROUTES[kind].name} to ${other.name} (${Math.round(length)} leagues).`, { groupId: group.id });
-    return;
   }
 }
 

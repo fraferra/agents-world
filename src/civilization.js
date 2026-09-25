@@ -3,7 +3,7 @@
  */
 import { attemptInnovation, reflectBelief, spreadIdeas, innovationEffects, knowsIdea } from './innovation.js';
 import { tradeAccess, recordTrade } from './diplomacy.js';
-import { routeFactor } from './infrastructure.js';
+import { routeFactor, plannedRoute } from './infrastructure.js';
 import { keptShare, addWealth, standing } from './economy.js';
 import { deliberate, recordReasoning, clearReasoning, reinforce, livePsyche, appraise, appreciate, attune, teachTechnique, converse, trustIn, techniqueFactor, knownExpert, rememberPlace, recallPlace, revisitPlace, practise, TECHNIQUES as PRACTICES } from './psyche.js';
 
@@ -81,6 +81,8 @@ const GATHERING = {
   gems: { action: 'prospect', skill: 'mining', verb: 'searching for gems' },
   coal: { action: 'colliery', skill: 'mining', verb: 'mining coal' }, uranium: { action: 'uranium', skill: 'mining', verb: 'mining uranium' },
 };
+// Units of product per unit of deposit on a tile.
+export const RICHNESS = Object.freeze({ coal: 6, ore: 2.5, stone: 2, uranium: 3 });
 const MATERIAL_OF = Object.fromEntries(Object.entries(GATHERING).map(([material, entry]) => [entry.action, material]));
 const techById = new Map(TECHNOLOGIES.map(tech => [tech.id, tech]));
 const stockKeys = ['stone', 'ore', 'tools', 'metal', 'goods', 'clay', 'fiber', 'herbs', 'gems', 'hides', 'bricks', 'cloth', 'remedies', 'coal', 'uranium', 'machines', 'electronics', 'warheads'];
@@ -420,22 +422,27 @@ function gatherMaterial(sim, agent, group, material) {
   const target = localResource(sim, agent, resource);
   if (!target) { agent.action = `prospecting for ${material}`; sim._move(agent, sim._landNear(agent.x + (sim._random() - .5) * 30, agent.y + (sim._random() - .5) * 30)); return; }
   sim._move(agent, target);
-  const tile = sim._tile(agent.x, agent.y), civ = group.civilization;
+  // A day's work at a distant deposit is a day trip: the load comes from the deposit
+  // itself, smaller the farther it lies; roads and railways shorten the journey.
+  const civ = group.civilization, away = distance(agent, target);
+  const tile = away > 1.5 ? sim._tile(target.x, target.y) : sim._tile(agent.x, agent.y);
+  const journey = away > 1.5 ? 1 / (1 + away / (civ.buildings.railway ? 36 : civ.technologies.includes('masonry') ? 18 : 12)) : 1;
   const skill = GATHERING[material].skill;
   const mill = material === 'wood' && civ.buildings.lumbermill ? 1.5 : 1;
   const technique = material === 'wood' ? techniqueFactor(agent, 'timber') : ['stone', 'ore', 'clay', 'gems', 'coal', 'uranium'].includes(material) ? techniqueFactor(agent, 'extract') : 1;
   // Gems and uranium are scarce and slow to find; everything else yields a day's load.
-  const base = material === 'gems' || material === 'uranium' ? .05 + agent.skills[skill] * .001 : .17 + agent.skills[skill] * .003;
+  // Coal seams give bulk tonnage for a day's work.
+  const base = material === 'gems' || material === 'uranium' ? .05 + agent.skills[skill] * .001 : material === 'coal' ? .42 + agent.skills[skill] * .006 : .17 + agent.skills[skill] * .003;
   // Steam pumps and powered drills: machines lift far more from mines and quarries.
   const machinery = ['stone', 'ore', 'coal', 'uranium', 'clay'].includes(material) ? industry(group).mechanization : 1;
-  const amount = Math.min(tile[resource] || 0, base * mill * technique * machinery * (civ.stock.tools > 0 ? 1.15 : 1) * innovationEffects(sim, group).gathering);
-  tile[resource] = Math.max(0, (tile[resource] || 0) - amount);
+  const amount = Math.min((tile[resource] || 0) * (RICHNESS[resource] || 1), base * mill * technique * machinery * journey * (civ.stock.tools > 0 ? 1.15 : 1) * innovationEffects(sim, group).gathering);
+  // A unit of deposit yields several of product: seams and veins run deep.
+  tile[resource] = Math.max(0, (tile[resource] || 0) - amount / (RICHNESS[resource] || 1));
   // Quarries, pits and mines scar the land where people dig.
   if (resource !== 'wood' && resource !== 'fiber' && resource !== 'herbs' && amount > 0) tile.worked = Math.min(1, (tile.worked || 0) + amount * .12);
   revisitPlace(sim, agent, resource, tile[resource] || 0);
-  if (amount > .05) rememberPlace(sim, agent, resource, Math.floor(agent.x) + .5, Math.floor(agent.y) + .5, tile[resource] || 0);
-  // Walking to a deposit is not a failed harvest; only judge the work on arrival.
-  outcome = amount > .01 ? clamp(amount * 4, .2, 1) : distance(agent, target) < .5 ? -.4 : null;
+  if (amount > .05) rememberPlace(sim, agent, resource, Math.floor(target.x) + .5, Math.floor(target.y) + .5, tile[resource] || 0);
+  outcome = amount > .01 ? clamp(amount * 4, .2, 1) : -.4;
   // Deep mining is dangerous work: collapses, firedamp and dust.
   if ((material === 'coal' || material === 'uranium') && amount > .01 && sim._random() < .006) agent.health = clamp(agent.health - 6 - sim._random() * 10, 0, 100);
   if (material === 'wood') group.wood += amount;
@@ -589,7 +596,10 @@ export function considerCivilization(sim, agent, group) {
   const buildingNeed = key => building ? Math.max(0, (BUILDINGS[building].cost[key] || 0) - stock[key]) : 0;
   const projectNeed = key => awaiting ? Math.max(0, (projectTech.materials[key] || 0) - stock[key]) : 0;
   // Stock a society is working toward: what the next building and demonstration both require.
-  const required = key => (building ? BUILDINGS[building].cost[key] || 0 : 0) + (awaiting ? projectTech.materials[key] || 0 : 0);
+  // The next road or railway line counts too, so smiths and miners work toward it.
+  const route = daily(sim, 'route', group, civ.buildings.railway * 1000 + civ.tradePartners.length, () => plannedRoute(sim, group));
+  const required = key => (building ? BUILDINGS[building].cost[key] || 0 : 0) + (awaiting ? projectTech.materials[key] || 0 : 0) + (route?.cost[key] || 0);
+  if (route) want(route.cost, 36, `Materials for the ${route.kind === 'rail' ? 'railway' : 'road'} to ${route.other.name}.`);
   // Work that supplies a demonstration the whole community is waiting on takes precedence.
   const awaited = awaitedMaterials(group), rush = key => awaited[key] ? 14 : 0;
   if (agent.age >= 14 && civ.buildings.kiln && known.includes('brickmaking') && stock.bricks < Math.max(3, required('bricks') + 1)) {
@@ -607,10 +617,6 @@ export function considerCivilization(sim, agent, group) {
     else want({ herbs: .3 }, (plague ? 50 : 30) + rush('remedies'), 'The apothecary needs fresh herbs.');
   }
   if (agent.age >= 14 && !civ.buildings.kiln && known.includes('pottery') && stock.clay < 2 && near.clay > .02) want({ clay: 2 }, 26, 'Clay will be needed for pottery.');
-  for (const [material, { score, reason }] of shortfalls) {
-    const { action, skill } = GATHERING[material];
-    add(action, score + agent.skills[skill] * .14 + (material === 'gems' ? mind.riskTolerance * 6 : 0), reason, [`Find ${material}`, 'Bring it to the settlement'], material);
-  }
   // A finite number of plots can be tended each day; otherwise farming crowds
   // every other occupation out of the policy even when there are surplus workers.
   if (sim._civilAssignments?.day !== sim.day) sim._civilAssignments = { day: sim.day, farms: new Map() };
@@ -635,7 +641,7 @@ export function considerCivilization(sim, agent, group) {
     else if (stock.stone < .2) add('quarry', 31 + rush('goods') + agent.skills.mining * .12, 'The kiln needs fresh stone-rich earth.', ['Locate useful earth and stone', 'Supply the kiln']);
     else add('lumber', 31 + rush('goods') + agent.skills.forestry * .12, 'The kiln needs wood fuel.', ['Collect wood fuel', 'Supply the kiln']);
   }
-  if (civ.buildings.forge && stock.metal < Math.max(8, members * .2)) {
+  if (civ.buildings.forge && stock.metal < Math.max(8, members * .2, required('metal') + 1)) {
     if (stock.ore >= .35 && group.wood >= .45) add('smelt', 39 + rush('metal') + agent.skills.crafting * .22 + mind.values.mastery * 12, 'Turn ore and fuel into useful metal.', ['Reach the forge', 'Smelt ore with wood fuel']);
     else if (stock.ore < .35) add('mine', 38 + rush('metal') + agent.skills.mining * .2, 'The forge has run short of ore.', ['Seek an ore deposit', 'Supply the forge']);
     else add('lumber', 38 + rush('metal') + agent.skills.forestry * .2, 'The forge needs wood fuel.', ['Collect fuel wood', 'Supply the forge']);
@@ -645,13 +651,13 @@ export function considerCivilization(sim, agent, group) {
   const modern = industry(group);
   if (agent.age >= 14 && civ.buildings.factory && stock.machines < Math.max(3, members * .15)) {
     if (stock.metal >= .3 && stock.coal >= .3) add('manufacture', 40 + (1 - modern.machines) * 12 + agent.skills.crafting * .25 + mind.ambition * 8, 'Build machines that multiply everyone’s labor.', ['Reach the factory', 'Fire the engines', 'Build and share machines']);
-    else want(stock.coal < .3 ? { coal: 2 } : { ore: 1 }, 39, stock.coal < .3 ? 'The factory engines need coal.' : 'The factory needs metal.');
+    else want(stock.coal < .3 ? { coal: 2 } : { ore: 1 }, 50, stock.coal < .3 ? 'The factory engines need coal.' : 'The factory needs metal.');
   }
   if (agent.age >= 14 && civ.buildings.factory && known.includes('electricity') && modern.powered && stock.electronics < Math.max(1, required('electronics') + (civ.buildings.silo ? 1 : 0) + .5)) {
     if (stock.metal >= .2 && stock.clay >= .2) add('assemble', 38 + rush('electronics') + agent.skills.crafting * .2 + agent.skills.scholarship * .15 + mind.values.mastery * 8, 'Assemble electronics for computers and machines.', ['Reach the factory', 'Assemble circuits']);
     else want(stock.clay < .2 ? { clay: 1 } : { ore: 1 }, 37, 'Electronics need metal and refined clay.');
   }
-  if (civ.buildings.powerplant && !civ.buildings.reactor && stock.coal < 4 + members * .05) want({ coal: 4 + members * .05 }, modern.powered ? 46 : 54, modern.powered ? 'The power station is burning through its coal.' : 'The power station has gone dark for want of coal.');
+  if (civ.buildings.powerplant && !civ.buildings.reactor && stock.coal < 4 + members * .05) want({ coal: 4 + members * .05 }, modern.powered ? 48 : 62 + (norms?.hierarchy || 0) * 20, modern.powered ? 'The power station is burning through its coal.' : 'The power station has gone dark for want of coal.');
   if (civ.buildings.reactor && stock.uranium < 1) want({ uranium: 1 }, 40, 'The reactor needs uranium fuel.');
   // How many warheads a society wants depends on how warlike it is and how threatened it feels.
   const threat = sim.diplomacy?.relations.some(r => (r.a === group.id || r.b === group.id) && (r.status === 'war' || r.tension > 50)) ? 2 : 0;
@@ -671,11 +677,18 @@ export function considerCivilization(sim, agent, group) {
   if (patient) add('heal', 45 + (100 - patient.health) * .4 + mind.values.care * 15, `${patient.name} needs care and practical medical knowledge.`, ['Reach the patient', 'Provide care and food'], patient.id);
   const neighborGroup = daily(sim, 'partner', group, civ.lastTradeDay, () => sim.groups.find(other => other.id !== group.id && other.civilization && tradeAccess(sim, group, other) && exchangePair(group, other)) || null);
   const pair = neighborGroup && exchangePair(group, neighborGroup);
-  if (pair && sim.day - civ.lastTradeDay >= Math.max(1, 12 / (effects.trade * techniqueFactor(agent, 'trade') * facilities(group).trade * routeFactor(sim, group, neighborGroup))) && agent.age >= 16) {
+  // A couple of traders suffice; the rest of the community keeps working.
+  const traders = sim._civilAssignments.farms.get(`trade:${group.id}`) || 0;
+  if (pair && traders < 2 && sim.day - civ.lastTradeDay >= Math.max(1, 12 / (effects.trade * techniqueFactor(agent, 'trade') * facilities(group).trade * routeFactor(sim, group, neighborGroup))) && agent.age >= 16) {
     const { seller, buyer, item } = pair;
     const foodNeed = clamp(1 - seller.food / Math.max(1, seller.members.length * 2));
     const goodNeed = clamp(1 - buyer.civilization.stock[item] / tradeTarget(buyer, item));
     add('trade', 46 + (foodNeed + goodNeed) * 8 + mind.ambition * 15 + agent.skills.leadership * .15, `Exchange ${item} for food with ${neighborGroup.name} to meet complementary needs.`, ['Visit the neighboring settlement', `Exchange ${item} and food`, 'Share useful knowledge'], neighborGroup.id);
+  }
+  // Raw materials anything above is waiting on (buildings, demonstrations, fuel, routes).
+  for (const [material, { score, reason }] of shortfalls) {
+    const { action, skill } = GATHERING[material];
+    add(action, score + agent.skills[skill] * .14 + (material === 'gems' ? mind.riskTolerance * 6 : 0), reason, [`Find ${material}`, 'Bring it to the settlement'], material);
   }
   // Personality, mood, memories, learned expectations and life goals reweigh
   // each option; the breakdown is kept so observers can see why.
@@ -690,11 +703,16 @@ export function considerCivilization(sim, agent, group) {
     return true;
   }
   outcome = null;
+  const energyBefore = agent.energy;
   const handled = execute(sim, agent, group, choice);
+  // Machines and electric power take the hardest labour off people's backs.
+  const saving = industry(group);
+  if (agent.energy < energyBefore && saving.mechanization * saving.electric > 1) agent.energy += (energyBefore - agent.energy) * (1 - 1 / (saving.mechanization * saving.electric));
   if (outcome !== null) reinforce(sim, agent, choice.action, outcome);
   if (handled === false) return false;
   if (choice.action === 'farm') sim._civilAssignments.farms.set(group.id, farmWorkers + 1);
   if (choice.action === 'hunt') sim._civilAssignments.farms.set(`hunt:${group.id}`, (sim._civilAssignments.farms.get(`hunt:${group.id}`) || 0) + 1);
+  if (choice.action === 'trade') sim._civilAssignments.farms.set(`trade:${group.id}`, (sim._civilAssignments.farms.get(`trade:${group.id}`) || 0) + 1);
   mind.needs.purpose = clamp(mind.needs.purpose - 1.6, 0, 100);
   mind.needs.stimulation = clamp(mind.needs.stimulation - (['research', 'invent', 'reflect', 'study', 'teach'].includes(choice.action) ? 3 : .5), 0, 100);
   return true;

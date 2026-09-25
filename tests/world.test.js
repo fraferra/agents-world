@@ -86,7 +86,7 @@ test('production chains transform real inputs: bricks, cloth, remedies and herds
     const civ = group.civilization;
     civ.technologies = TECHNOLOGIES.map(tech => tech.id);
     for (const id of Object.keys(BUILDINGS)) civ.buildings[id] = 1;
-    Object.assign(civ.stock, { tools: 20, goods: 20, metal: 20, cloth: 20, remedies: 20, bricks: 20, stone: 20, ore: 20 });
+    Object.assign(civ.stock, { tools: 20, goods: 20, metal: 20, cloth: 20, remedies: 20, bricks: 20, stone: 20, ore: 20, coal: 20, uranium: 20, machines: 20, electronics: 20, warheads: 20 });
     setup(sim, group, civ, agent);
     sim._random = () => 0;
     considerCivilization(sim, agent, group);
