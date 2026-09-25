@@ -9,6 +9,23 @@ import { feel, recordEpisode } from './psyche.js';
 import { seafaring } from './infrastructure.js';
 
 const clamp = (value, low = 0, high = 1) => Math.min(high, Math.max(low, value));
+
+/**
+ * The households that go: each chosen adult with their partner and young children,
+ * whole families only, added in order until `limit` people would be exceeded.
+ */
+function households(sim, group, adults, limit, exclude = null) {
+  const going = new Set();
+  for (const agent of adults) {
+    const family = [agent];
+    const partner = sim._agentMap.get(agent.partnerId);
+    if (partner?.groupId === group.id && partner.id !== exclude && !going.has(partner)) family.push(partner);
+    for (const id of agent.children) { const child = sim._agentMap.get(id); if (child?.groupId === group.id && child.age < 14 && !going.has(child)) family.push(child); }
+    if (going.size + family.length > limit) continue;
+    for (const member of family) going.add(member);
+  }
+  return going;
+}
 const round = value => Math.round(value * 1e4) / 1e4 || 0;
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -109,12 +126,11 @@ export function considerExpansion(sim, group, near, found) {
   const count = Math.min(pioneers.length, Math.max(crew, Math.round(people.length * (.18 + desire * .15))));
   // A colony needs enough pioneers to survive (a ship's crew may be fewer), and the mother community enough people to carry on.
   if (count < crew || people.length - count < 12) return null;
-  const chosen = new Set(pioneers.slice(0, count));
-  for (const agent of [...chosen]) {
-    const partner = sim._agentMap.get(agent.partnerId);
-    if (partner?.groupId === group.id && partner.id !== culture.leaderId) chosen.add(partner);
-    for (const id of agent.children) { const child = sim._agentMap.get(id); if (child?.groupId === group.id && child.age < 14) chosen.add(child); }
-  }
+  // Families go together, but a colony never takes more than a third of the town, and at least
+  // twelve people (and three fifths of the town) stay home.
+  const limit = Math.min(Math.floor(people.length / 3), people.length - Math.max(12, Math.ceil(people.length * .6)));
+  const chosen = households(sim, group, pioneers.slice(0, Math.max(count, crew)), limit, culture.leaderId);
+  if ([...chosen].filter(agent => agent.age >= 16).length < Math.min(crew, 4)) return null;
   const settlers = [...chosen];
   const share = settlers.length / people.length;
   const colony = found(site, settlers, group);
@@ -185,11 +201,9 @@ export function considerFission(sim, group, found) {
     const friend = sim._agentMap.get(relation.id);
     if (friend?.groupId === group.id && friend.id !== leaderId && relation.strength > .5 && faction.size < n * .45) faction.add(friend);
   }
-  for (const agent of [...faction]) {
-    const partner = sim._agentMap.get(agent.partnerId);
-    if (partner?.groupId === group.id && partner.id !== leaderId) faction.add(partner);
-    for (const id of agent.children) { const child = sim._agentMap.get(id); if (child?.groupId === group.id && child.age < 14) faction.add(child); }
-  }
+  // With their families, the breakaway takes at most 45% of the society.
+  const leaving = households(sim, group, [...faction], Math.floor(n * .45), leaderId);
+  faction.clear(); for (const agent of leaving) faction.add(agent);
   if (faction.size < 4 || n - faction.size < 6) return null;
   const angle = sim._random() * Math.PI * 2, range = 9 + sim._random() * 8;
   const site = sim._landNear(group.x + Math.cos(angle) * range, group.y + Math.sin(angle) * range);
