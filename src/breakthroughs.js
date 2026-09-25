@@ -11,6 +11,9 @@
  * Everything random comes from the world's saved generator.
  */
 import { TECHNOLOGIES } from './civilization.js';
+import { feel } from './psyche.js';
+import { addWealth } from './economy.js';
+import { rulingParty } from './polity.js';
 
 export const FIELDS = Object.freeze(['machines', 'weapons', 'energy', 'medicine', 'agriculture', 'transport', 'information', 'materials', 'society']);
 export const ADVANCE_KEYS = Object.freeze(['production', 'food', 'research', 'health', 'combat', 'trade', 'energy', 'automation', 'growth', 'pollution', 'unrest']);
@@ -173,9 +176,11 @@ export function adoptBreakthrough(sim, group, entry) {
   if (civ.breakthroughs.includes(entry.id)) return false;
   civ.breakthroughs.push(entry.id);
   civ.advances = sumAdvances(sim, civ.breakthroughs);
+  // Each kind of advance nudges how people live and what they value.
   const norms = civ.culture?.norms;
-  if (norms && entry.field === 'weapons') norms.martial = round(clamp(norms.martial + .03));
-  if (norms && entry.field === 'information') norms.innovation = round(clamp(norms.innovation + .02));
+  const shift = { weapons: { martial: .03 }, information: { innovation: .02, tradition: -.01 }, machines: { innovation: .01 }, medicine: { collectivism: .01 },
+    transport: { mercantile: .015, expansion: .015 }, society: { hierarchy: -.015, collectivism: .01 }, energy: { innovation: .01 }, agriculture: { tradition: -.01 }, materials: { mercantile: .01 } }[entry.field] || {};
+  if (norms) for (const [key, delta] of Object.entries(shift)) if (norms[key] !== undefined) norms[key] = round(clamp(norms[key] + delta));
   return true;
 }
 
@@ -186,9 +191,30 @@ export function sumAdvances(sim, ids) {
     if (entry) for (const key of ADVANCE_KEYS) total[key] += entry.effects[key] || 0;
   }
   // Diminishing returns: each field of advance saturates rather than compounding without end.
-  for (const key of ADVANCE_KEYS) total[key] = round(key === 'pollution' || key === 'unrest' ? total[key] : Math.sign(total[key]) * Math.log1p(Math.abs(total[key]) * 1.5) / 1.5);
+  // Pollution saturates too, and clean energy (dams, solar, fusion) displaces the dirtiest of it.
+  for (const key of ADVANCE_KEYS) if (key !== 'unrest') total[key] = round(Math.sign(total[key]) * Math.log1p(Math.abs(total[key]) * 1.5) / 1.5);
+  total.pollution = round(Math.max(0, total.pollution - Math.max(0, total.energy) * .35));
+  total.unrest = round(total.unrest);
   return total;
 }
+
+const masteryCache = new WeakMap();
+/**
+ * How far a society has gone in each field: the depth of its deepest
+ * breakthrough there (0 where it has none). This is what shows on the land:
+ * wind farms before fusion plants, radio masts before thinking machines.
+ */
+export function fieldMastery(sim, group) {
+  const ids = group?.civilization?.breakthroughs;
+  if (!ids?.length) return NO_MASTERY;
+  const cached = masteryCache.get(ids);
+  if (cached && cached.length === ids.length) return cached.mastery;
+  const byId = registry(sim), mastery = Object.fromEntries(FIELDS.map(field => [field, 0]));
+  for (const id of ids) { const entry = byId.get(id); if (entry) mastery[entry.field] = Math.max(mastery[entry.field], entry.depth); }
+  masteryCache.set(ids, { length: ids.length, mastery });
+  return mastery;
+}
+const NO_MASTERY = Object.freeze(Object.fromEntries(FIELDS.map(field => [field, 0])));
 
 const NO_ADVANCES = Object.freeze(Object.fromEntries(ADVANCE_KEYS.map(key => [key, 0])));
 /** A society's summed advances (zero before any breakthrough). */
@@ -211,6 +237,7 @@ export function advanceBreakthroughs(sim) {
       for (const [key, per] of [['goods', .02], ['machines', .006], ['electronics', .003], ['tools', .008]]) { const made = n * rate * per; civ.stock[key] += made; civ.production[key] += made; }
     }
     if (sim.day % 30 !== (group.id + 7) % 30) continue;
+    transform(sim, group, fx);
     // Researchers waiting on materials improvise: each month the prototype needs less.
     const frontier = civ.frontier;
     if (frontier && frontier.progress >= frontier.required) {
@@ -232,6 +259,40 @@ export function advanceBreakthroughs(sim) {
         }
       }
     }
+  }
+}
+
+/**
+ * Monthly: what advances do to a society and its land. Automation displaces
+ * low-skilled workers, who suffer unless a welfare state or a communal culture
+ * shares the gains; deep agriculture and clean energy let farmland and forest
+ * recover, synthetic materials let mines close, and a green government
+ * restores the land; polluting advances kill the woods around a town.
+ */
+function transform(sim, group, fx) {
+  const civ = group.civilization, mastery = fieldMastery(sim, group), norms = civ.culture?.norms || {};
+  if (fx.automation > .15) {
+    const welfare = clamp((norms.collectivism ?? .4) * .6 + (mastery.society >= 5 ? .3 : 0));
+    const share = clamp(fx.automation * .35);
+    const displaced = group.members.map(id => sim._agentMap.get(id)).filter(agent => agent && agent.age >= 18 && agent.age < 65 && agent.skills && Math.max(...Object.values(agent.skills)) < 35);
+    const count = Math.floor(displaced.length * share);
+    for (const agent of displaced.slice(0, count)) {
+      // Automation's dividend reaches them through the welfare state, or they are left behind.
+      if (sim._random() < welfare) addWealth(agent, fx.automation * 2);
+      else { feel(agent, 'anger', .08); feel(agent, 'pride', -.05); agent._stress = Math.min(200, (agent._stress || 0) + 12); }
+    }
+  }
+  // A green government with clean power replants and restores as policy.
+  const green = mastery.energy >= 4 && /Green/.test(rulingParty(sim, group)?.name || '');
+  const restore = (mastery.agriculture >= 5 && fx.energy >= .3) || mastery.materials >= 6 || green, dieback = fx.pollution > .3 && !green;
+  if (!restore && !dieback) return;
+  const radius = 9, cx = Math.floor(group.x), cy = Math.floor(group.y);
+  for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+    const x = cx + dx, y = cy + dy;
+    if (x < 0 || y < 0 || x >= sim.width || y >= sim.height || dx * dx + dy * dy > radius * radius) continue;
+    const tile = sim.tiles[y * sim.width + x];
+    if (tile.terrain === 'forest') tile.wood = round(clamp(tile.wood + (restore ? .06 : 0) - (dieback ? Math.min(.03, (fx.pollution - .3) * .04) : 0)));
+    if (restore && mastery.materials >= 6 && tile.worked > 0) tile.worked = round(Math.max(0, tile.worked - .08));
   }
 }
 

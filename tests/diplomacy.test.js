@@ -65,9 +65,13 @@ test('war consumes provisions, transfers loot conservatively and damages actual 
   assert.ok(Math.abs(a.civilization.stock.goods + b.civilization.stock.goods - goods) < 1e-9);
   assert.ok(sim.agents.some(agent => agent.health < 100));
   assert.equal(sim.diplomacy.raids, 1);
-  relation.warDays = 250;
-  sim.day++; advanceDiplomacy(sim);
+  // Wars end when a side's weariness passes its resolve: here, after years of fighting.
+  const war = sim.diplomacy.wars[0];
+  assert.ok(war && relation.warId === war.id, 'the war has a record');
+  war.start = sim.day - 120 * 8;
+  sim.day = 31; advanceDiplomacy(sim);
   assert.equal(relation.status, 'truce', 'wars end through exhaustion');
+  assert.ok(war.end !== null && war.outcome.text.length);
 });
 
 test('diplomacy state validates identities and accounting and has no aliases', () => {

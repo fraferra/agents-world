@@ -10,14 +10,20 @@ const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const lerp = (a, b, n) => a + (b - a) * n;
 
 const built = group => Object.values(group.civilization?.buildings || {}).reduce((a, b) => a + b, 0);
+const FIELDS = ['energy', 'agriculture', 'information', 'machines', 'transport', 'medicine', 'weapons', 'materials', 'society'];
+/** The depth of a society's deepest breakthrough in any field. */
+const frontierDepth = group => Math.max(0, ...Object.values(group.mastery || {}));
 /**
  * How developed a settlement looks: 0 camp, 1 village, 2 brick town, 3 stone city,
- * 4 industrial town, 5 modern city with electric light.
+ * 4 industrial town, 5 modern city with electric light, 6 a city of the future
+ * built on deep breakthroughs.
  */
 function eraOf(group) {
   const civ = group.civilization, b = civ?.buildings;
   if (!b || !built(group)) return 0;
-  if ((b.datacenter || b.powerplant || b.reactor) && industry(group).powered) return 5;
+  const powered = industry(group).powered;
+  if (frontierDepth(group) >= 7 && (powered || b.factory || b.datacenter)) return 6;
+  if ((b.datacenter || b.powerplant || b.reactor) && powered) return 5;
   if (b.factory || b.railway) return 4;
   const tier = civ.culture?.tier || 0;
   if (tier >= 3) return 3;
@@ -168,6 +174,13 @@ export class WorldView {
   }
 
   setSelected(id) { this.selectedId = id; }
+
+  /** Centres the map on a place, zoomed in close enough to see it. */
+  focusOn(x, y, zoom = 6) {
+    this.followId = null;
+    this.camera.x = x; this.camera.y = y;
+    if (this.zoom < zoom) this.zoomBy(zoom / this.zoom);
+  }
 
   setFollow(id) {
     this.followId = id;
@@ -494,7 +507,7 @@ export class WorldView {
       }
       if (urban) {
         // Built-up ground: trodden earth, then cobbles, then stone and asphalt.
-        const ground = ['#b9a983', '#b9a983', '#b8a58a', '#aaa596', '#8f8b84', '#85888a'][era];
+        const ground = ['#b9a983', '#b9a983', '#b8a58a', '#aaa596', '#8f8b84', '#85888a', '#9aa6a0'][era];
         const r = urban * unit;
         ctx.fillStyle = withAlpha(ground, 'd9');
         ctx.beginPath(); ctx.ellipse(group.x * unit, group.y * unit, r, r * 0.78, 0, 0, TAU); ctx.fill();
@@ -510,6 +523,7 @@ export class WorldView {
           ctx.restore();
         }
       }
+      this.developAdvanced(ctx, group, unit, urban, width, height, tiles);
       const smog = industry(group).smog;
       if (smog > 0) {
         const r = (5 + smog * 4) * unit;
@@ -524,6 +538,57 @@ export class WorldView {
     ctx.drawImage(this.landMask, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
     this.developmentCanvas = canvas;
+  }
+
+  /**
+   * What breakthroughs do to the land around a society: ring roads and
+   * motorways, solar fields, green belts where farming no longer needs the
+   * land, and dead grey woods where advances pollute.
+   */
+  developAdvanced(ctx, group, unit, urban, width, height, tiles) {
+    const m = group.mastery;
+    if (!m) return;
+    const cx = group.x * unit, cy = group.y * unit, advances = group.civilization?.advances || {};
+    const pollution = Math.min(1, advances.pollution || 0);
+    if (pollution > 0.3) {
+      // Poisoned land: greyed, dying vegetation around the town.
+      const r = (urban + 4 + pollution * 5) * unit;
+      const blight = ctx.createRadialGradient(cx, cy, urban * unit, cx, cy, r);
+      blight.addColorStop(0, `rgba(120,112,96,${0.12 + pollution * 0.25})`); blight.addColorStop(1, 'rgba(120,112,96,0)');
+      ctx.fillStyle = blight; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    }
+    if (m.agriculture >= 5 && (advances.energy || 0) >= 0.3) {
+      // A green belt: land spared by vertical farms and clean power, returning to wood and meadow.
+      const r0 = (urban + 1) * unit, r1 = (urban + 4.5) * unit;
+      ctx.strokeStyle = 'rgba(88,128,72,.5)'; ctx.lineWidth = r1 - r0;
+      ctx.beginPath(); ctx.ellipse(cx, cy, (r0 + r1) / 2, (r0 + r1) / 2 * 0.8, 0, 0, TAU); ctx.stroke();
+      if (unit >= 3) for (let k = 0; k < 40; k++) {
+        const a = random(group.id, k, 81) * TAU, d = r0 + random(group.id, k, 82) * (r1 - r0);
+        ellipse(ctx, cx + Math.cos(a) * d, cy + Math.sin(a) * d * 0.8, unit * 0.35, unit * 0.3, 'rgba(62,104,58,.55)');
+      }
+    }
+    if (m.energy >= 5) {
+      // Solar fields on open ground beyond the town.
+      for (let k = 0; k < Math.min(4, m.energy - 3); k++) {
+        const a = group.id * 1.7 + k * 1.9, d = (urban + 5 + k * 1.2);
+        const tx = Math.floor(group.x + Math.cos(a) * d), ty = Math.floor(group.y + Math.sin(a) * d * 0.8);
+        if (tx < 1 || ty < 1 || tx >= width - 2 || ty >= height - 2 || tiles[ty * width + tx]?.terrain === 'water' || tiles[ty * width + tx]?.terrain === 'mountain') continue;
+        ctx.fillStyle = 'rgba(58,84,120,.8)'; ctx.fillRect(tx * unit, ty * unit, unit * 2, unit * 1.4);
+        if (unit >= 4) { ctx.strokeStyle = 'rgba(200,214,230,.5)'; ctx.lineWidth = 1; for (let r = 1; r < 4; r++) { ctx.beginPath(); ctx.moveTo(tx * unit, ty * unit + r * unit * 0.35); ctx.lineTo(tx * unit + unit * 2, ty * unit + r * unit * 0.35); ctx.stroke(); } }
+      }
+    }
+    if (m.transport >= 4) {
+      // A ring road, and at greater depth a second, wider motorway ring with radial spokes.
+      const rings = m.transport >= 6 ? [urban + 1.2, urban + 3.2] : [urban + 1.2];
+      ctx.strokeStyle = 'rgba(96,98,102,.75)'; ctx.lineWidth = Math.max(1, unit * 0.32);
+      for (const r of rings) { ctx.beginPath(); ctx.ellipse(cx, cy, r * unit, r * unit * 0.8, 0, 0, TAU); ctx.stroke(); }
+      ctx.lineWidth = Math.max(1, unit * 0.22);
+      for (let k = 0; k < (m.transport >= 6 ? 6 : 4); k++) {
+        const a = k / (m.transport >= 6 ? 6 : 4) * TAU + group.id;
+        ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * urban * 0.6 * unit, cy + Math.sin(a) * urban * 0.6 * unit * 0.8);
+        ctx.lineTo(cx + Math.cos(a) * (rings.at(-1) + 2) * unit, cy + Math.sin(a) * (rings.at(-1) + 2) * unit * 0.8); ctx.stroke();
+      }
+    }
   }
 
   /**
@@ -686,6 +751,7 @@ export class WorldView {
 
   drawSettlement(ctx, group, time = 0) {
     this.drawIndustry(ctx, group, time);
+    this.drawLandmarks(ctx, group, time);
     const era = eraOf(group);
     if (era >= 2) { this.drawTown(ctx, group, era, time); return; }
     const count = clamp(group.shelters || 0, 0, 9);
@@ -728,6 +794,176 @@ export class WorldView {
     }
   }
 
+  /**
+   * The works of a society's breakthroughs, one for each field it has pushed
+   * far, drawn as the deepest stage it has reached: wind turbines, then solar
+   * towers, then a fusion plant; greenhouses, then vertical farms; a radio
+   * mast, a data campus, then a thinking machine; robot works; a spaceport;
+   * a research hospital; a military base; a plaza of the commons.
+   */
+  drawLandmarks(ctx, group, time) {
+    const m = group.mastery;
+    if (!m) return;
+    const inner = urbanRadius(group);
+    let slot = 0;
+    for (const field of FIELDS) {
+      const depth = m[field] || 0;
+      if (depth < 3) continue;
+      let position = null;
+      for (let attempt = 0; attempt < 10 && !position; attempt++) {
+        const angle = group.id * 0.9 + slot * 2.2 + attempt * 0.45;
+        const radius = inner + 5.4 + (slot % 3) * 1.3 + attempt * 0.2;
+        const x = group.x + Math.cos(angle) * radius, y = group.y + Math.sin(angle) * radius * 0.75;
+        const tile = this.snapshot.tiles[Math.floor(y) * this.snapshot.width + Math.floor(x)];
+        if (tile && tile.terrain !== 'water' && x > 1 && y > 1 && x < this.snapshot.width - 1 && y < this.snapshot.height - 1) position = { x, y };
+      }
+      slot++;
+      if (!position || !this.visible(position.x, position.y, 4)) continue;
+      ctx.save(); ctx.translate(position.x, position.y);
+      ellipse(ctx, 0.1, 0.45, 1.1, 0.28, 'rgba(59,69,43,.22)');
+      this.drawLandmark(ctx, field, depth, time, group);
+      ctx.restore();
+      if (this.overlay === 'industry' && this.scale > 8) {
+        ctx.font = `500 ${9 / this.scale}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillStyle = '#e8f4f4'; ctx.strokeStyle = '#3f5d63'; ctx.lineWidth = 2.4 / this.scale;
+        const label = `${field[0].toUpperCase()}${field.slice(1)} · depth ${depth}`;
+        ctx.strokeText(label, position.x, position.y + 0.8); ctx.fillText(label, position.x, position.y + 0.8);
+      }
+    }
+  }
+
+  drawLandmark(ctx, field, depth, time, group) {
+    const t = time / 1000;
+    const glow = (alpha = 1) => `rgba(120,230,245,${alpha * (0.6 + Math.sin(t * 2 + group.id) * 0.3)})`;
+    if (field === 'energy') {
+      if (depth >= 7) {
+        // Fusion plant: a glowing torus under a dome.
+        ctx.fillStyle = '#c9d3d8'; ctx.fillRect(-1, -0.3, 2, 0.75);
+        ellipse(ctx, 0, -0.35, 0.9, 0.6, '#dde6ea');
+        ctx.strokeStyle = glow(); ctx.lineWidth = 0.14; ctx.beginPath(); ctx.ellipse(0, -0.35, 0.55, 0.22, 0, 0, TAU); ctx.stroke();
+        return;
+      }
+      if (depth >= 5) {
+        // A solar tower amid its mirrors.
+        ctx.fillStyle = '#6d7a86'; ctx.fillRect(-0.08, -1.6, 0.16, 1.9);
+        ctx.fillStyle = `rgba(255,230,150,${0.7 + Math.sin(t * 3) * 0.2})`; ctx.beginPath(); ctx.arc(0, -1.65, 0.16, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#4c6c8f'; for (let k = 0; k < 6; k++) ctx.fillRect(-1.1 + (k % 3) * 0.8, 0.05 + Math.floor(k / 3) * 0.3, 0.5, 0.16);
+        return;
+      }
+      // Wind turbines, blades turning.
+      for (const [ox, oy] of [[-0.7, 0.1], [0.1, -0.1], [0.8, 0.15]]) {
+        ctx.strokeStyle = '#e9ecee'; ctx.lineWidth = 0.07;
+        ctx.beginPath(); ctx.moveTo(ox, oy + 0.35); ctx.lineTo(ox, oy - 0.9); ctx.stroke();
+        for (let k = 0; k < 3; k++) {
+          const a = t * 2.4 + ox + k * TAU / 3;
+          ctx.beginPath(); ctx.moveTo(ox, oy - 0.9); ctx.lineTo(ox + Math.cos(a) * 0.5, oy - 0.9 + Math.sin(a) * 0.5); ctx.stroke();
+        }
+      }
+      return;
+    }
+    if (field === 'agriculture') {
+      if (depth >= 5) {
+        // A vertical farm: a tower banded with green.
+        ctx.fillStyle = '#d8e4dc'; ctx.fillRect(-0.4, -2, 0.8, 2.35);
+        for (let k = 0; k < 7; k++) { ctx.fillStyle = k % 2 ? '#6ea35c' : '#8dc06f'; ctx.fillRect(-0.4, -1.9 + k * 0.3, 0.8, 0.14); }
+        if (depth >= 8) { ellipse(ctx, 1, 0, 0.6, 0.45, 'rgba(170,220,190,.8)'); ellipse(ctx, 1, 0.1, 0.4, 0.18, '#6ea35c'); }
+        return;
+      }
+      // Greenhouses in rows.
+      for (let k = 0; k < 3; k++) { ctx.fillStyle = 'rgba(214,236,232,.9)'; ctx.fillRect(-1.1 + k * 0.78, -0.2, 0.62, 0.5); ctx.fillStyle = 'rgba(120,170,110,.7)'; ctx.fillRect(-1.05 + k * 0.78, 0.1, 0.52, 0.15); }
+      return;
+    }
+    if (field === 'information') {
+      if (depth >= 7) {
+        // A thinking machine: a dark monolith with a living glow.
+        ctx.fillStyle = '#1d2327'; ctx.fillRect(-0.45, -2, 0.9, 2.35);
+        ctx.fillStyle = glow(); for (let k = 0; k < 5; k++) ctx.fillRect(-0.3, -1.8 + k * 0.42 + (Math.sin(t * 3 + k) + 1) * 0.05, 0.6, 0.05);
+        ctx.strokeStyle = glow(0.5); ctx.lineWidth = 0.05; ctx.beginPath(); ctx.arc(0, -1, 1 + (t % 1.5) * 0.4, 0, TAU); ctx.stroke();
+        return;
+      }
+      if (depth >= 5) {
+        // A data campus: server halls and a dish.
+        ctx.fillStyle = '#b8c2c8'; ctx.fillRect(-1, -0.3, 1.3, 0.7); ctx.fillRect(0.4, -0.1, 0.7, 0.5);
+        ctx.fillStyle = '#6fd3e0'; for (let k = 0; k < 5; k++) ctx.fillRect(-0.9 + k * 0.25, -0.15, 0.1, 0.05);
+        ctx.strokeStyle = '#e4e8ea'; ctx.lineWidth = 0.08; ctx.beginPath(); ctx.arc(0.75, -0.5, 0.35, Math.PI * 0.9, Math.PI * 1.9); ctx.stroke();
+        return;
+      }
+      // A lattice radio mast with a blinking light.
+      ctx.strokeStyle = '#8b8f94'; ctx.lineWidth = 0.05;
+      ctx.beginPath(); ctx.moveTo(-0.3, 0.35); ctx.lineTo(0, -1.8); ctx.lineTo(0.3, 0.35); ctx.moveTo(-0.2, -0.3); ctx.lineTo(0.2, -0.3); ctx.moveTo(-0.1, -1); ctx.lineTo(0.1, -1); ctx.stroke();
+      if (Math.sin(t * 3) > 0) { ctx.fillStyle = '#e8584a'; ctx.beginPath(); ctx.arc(0, -1.85, 0.08, 0, TAU); ctx.fill(); }
+      return;
+    }
+    if (field === 'machines') {
+      // Robot works: a clean, windowless hall with an arm at work; a hex dome for nanofactories.
+      ctx.fillStyle = '#c4ccd0'; ctx.fillRect(-1, -0.3, 2, 0.75);
+      ctx.fillStyle = '#e28f3a'; ctx.fillRect(-1, -0.3, 2, 0.08);
+      const a = Math.sin(t * 1.8 + group.id) * 0.6;
+      ctx.strokeStyle = '#e8a23f'; ctx.lineWidth = 0.1; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(0.5, -0.3); ctx.lineTo(0.5 + Math.cos(-1.2 + a) * 0.45, -0.3 + Math.sin(-1.2 + a) * 0.45); ctx.lineTo(0.5 + Math.cos(-1.2 + a) * 0.45 + 0.3, -0.3 + Math.sin(-1.2 + a) * 0.45 + 0.1); ctx.stroke(); ctx.lineCap = 'butt';
+      if (depth >= 7) { ellipse(ctx, -0.5, -0.4, 0.5, 0.4, 'rgba(200,210,220,.95)'); ctx.strokeStyle = glow(0.7); ctx.lineWidth = 0.04; ctx.beginPath(); ctx.ellipse(-0.5, -0.4, 0.5, 0.4, 0, Math.PI, TAU); ctx.stroke(); }
+      return;
+    }
+    if (field === 'transport') {
+      if (depth >= 9) {
+        // A space elevator: a tether rising out of sight.
+        ctx.strokeStyle = 'rgba(210,235,245,.55)'; ctx.lineWidth = 0.06;
+        ctx.beginPath(); ctx.moveTo(0.8, 0.1); ctx.lineTo(0.8, -40); ctx.stroke();
+        const climb = ((t * 0.15 + group.id) % 1) * 38;
+        ctx.fillStyle = '#e8f2f6'; ctx.fillRect(0.7, -climb - 0.2, 0.2, 0.3);
+      }
+      if (depth >= 7) {
+        // A spaceport: a launch tower and a rocket that lifts off now and then.
+        ctx.fillStyle = '#9da3a8'; ctx.fillRect(-1, 0.1, 2, 0.3);
+        ctx.strokeStyle = '#b75b3a'; ctx.lineWidth = 0.07; ctx.beginPath(); ctx.moveTo(-0.45, 0.1); ctx.lineTo(-0.45, -1.9); ctx.stroke();
+        const cycle = (t + group.id * 3) % 24, lift = cycle > 20 ? (cycle - 20) ** 2 * 1.2 : 0;
+        ctx.fillStyle = '#f2f2ee'; ctx.beginPath(); ctx.moveTo(-0.1, 0.1 - lift); ctx.lineTo(-0.1, -1.4 - lift); ctx.lineTo(0, -1.75 - lift); ctx.lineTo(0.1, -1.4 - lift); ctx.lineTo(0.1, 0.1 - lift); ctx.fill();
+        if (lift) { ctx.fillStyle = 'rgba(255,190,90,.85)'; ctx.beginPath(); ctx.moveTo(-0.1, 0.1 - lift); ctx.lineTo(0, 0.7 - lift + Math.random() * 0.2); ctx.lineTo(0.1, 0.1 - lift); ctx.fill(); this.drawSmoke(ctx, 0, 0.3, time, 'rgba(230,230,225,', 0.6, group.id); }
+        return;
+      }
+      // A motorway interchange: a cloverleaf.
+      ctx.strokeStyle = '#7b7e82'; ctx.lineWidth = 0.14;
+      ctx.beginPath(); ctx.moveTo(-1.2, 0); ctx.lineTo(1.2, 0); ctx.moveTo(0, -0.9); ctx.lineTo(0, 0.9); ctx.stroke();
+      for (const [ox, oy] of [[-0.35, -0.3], [0.35, -0.3], [-0.35, 0.3], [0.35, 0.3]]) { ctx.beginPath(); ctx.arc(ox, oy, 0.25, 0, TAU); ctx.stroke(); }
+      if (depth >= 5) { const k = (t * 0.3 + group.id) % 1; ctx.fillStyle = '#e9ecef'; ctx.fillRect(-1.2 + k * 2.4, -0.07, 0.3, 0.14); }
+      return;
+    }
+    if (field === 'medicine') {
+      // A research hospital with a helipad; at depth a biolab dome.
+      ctx.fillStyle = '#f0f1ee'; ctx.fillRect(-0.9, -0.9, 1.3, 1.25);
+      ctx.fillStyle = '#c94a45'; ctx.fillRect(-0.32, -0.7, 0.16, 0.5); ctx.fillRect(-0.49, -0.53, 0.5, 0.16);
+      ctx.fillStyle = '#9fb7c0'; for (let k = 0; k < 3; k++) ctx.fillRect(-0.8 + k * 0.4, 0, 0.25, 0.15);
+      if (depth >= 7) ellipse(ctx, 0.8, -0.1, 0.45, 0.4, 'rgba(210,240,220,.9)');
+      else { ellipse(ctx, 0.75, 0.1, 0.35, 0.2, '#8d9296'); ctx.fillStyle = '#f0f1ee'; ctx.font = '0.25px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('H', 0.75, 0.18); }
+      return;
+    }
+    if (field === 'weapons') {
+      // A military base: hangars, a radar dish, and missiles at depth.
+      ctx.fillStyle = '#7d8468'; ctx.fillRect(-1.1, -0.1, 2.2, 0.5);
+      ctx.fillStyle = '#5f6552'; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(-0.7 + k * 0.6, 0, 0.26, Math.PI, TAU); ctx.fill(); }
+      const a = t * 1.5;
+      ctx.strokeStyle = '#d6d9d2'; ctx.lineWidth = 0.06; ctx.beginPath(); ctx.moveTo(0.95, -0.1); ctx.lineTo(0.95, -0.6); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(0.95, -0.7, 0.28 * Math.abs(Math.cos(a)), 0.14, 0, 0, TAU); ctx.stroke();
+      if (depth >= 6) { ctx.fillStyle = '#d2d5cc'; for (let k = 0; k < 2; k++) ctx.fillRect(-1.05 + k * 0.25, -0.9, 0.1, 0.75); }
+      return;
+    }
+    if (field === 'society') {
+      // A civic plaza under a glass dome, with gardens.
+      ellipse(ctx, 0, 0.1, 1.1, 0.45, '#cfd8c6');
+      ctx.fillStyle = '#ece6d4'; ctx.fillRect(-0.6, -0.5, 1.2, 0.6);
+      ellipse(ctx, 0, -0.5, 0.55, 0.42, depth >= 6 ? 'rgba(200,232,238,.9)' : '#c8b88a');
+      ctx.fillStyle = group.color; ctx.fillRect(-0.03, -1.2, 0.3, 0.18);
+      ctx.strokeStyle = '#6b654f'; ctx.lineWidth = 0.04; ctx.beginPath(); ctx.moveTo(-0.03, -0.9); ctx.lineTo(-0.03, -1.2); ctx.stroke();
+      return;
+    }
+    // Materials: iridescent spires of smart matter, or a modern foundry.
+    const hue = (t * 40 + group.id * 30) % 360;
+    for (let k = 0; k < 3; k++) {
+      ctx.fillStyle = depth >= 6 ? `hsla(${(hue + k * 40) % 360},55%,70%,.9)` : '#8f8a86';
+      ctx.beginPath(); ctx.moveTo(-0.7 + k * 0.6, 0.35); ctx.lineTo(-0.55 + k * 0.6, -0.6 - k * 0.35); ctx.lineTo(-0.4 + k * 0.6, 0.35); ctx.fill();
+    }
+  }
+
   /** A town drawn in the style of its age, one house for about every three people. */
   drawTown(ctx, group, era, time) {
     const count = clamp(Math.max(group.shelters || 0, Math.ceil(group.members.length / 3)), 1, 40);
@@ -746,7 +982,32 @@ export class WorldView {
     for (const { x, y, i } of houses) {
       const r = random(Math.round(x * 10), Math.round(y * 10), 51);
       ellipse(ctx, x + 0.14, y + 0.3, 0.6, 0.2, 'rgba(59,69,43,.22)');
-      if (era === 5) {
+      if (era === 6) {
+        // The city of the future: slender glass spires with rooftop gardens, domes and sky bridges.
+        const w = 0.34 + r * 0.2, h = i === 0 ? 4.2 : 1.3 + r * 2.2;
+        if (r < 0.18 && i) {
+          ellipse(ctx, x, y - 0.1, 0.62, 0.5, 'rgba(190,226,232,.85)');
+          ctx.strokeStyle = 'rgba(120,170,180,.9)'; ctx.lineWidth = 0.04; ctx.beginPath(); ctx.ellipse(x, y - 0.1, 0.62, 0.5, 0, Math.PI, TAU); ctx.stroke();
+          ellipse(ctx, x, y + 0.05, 0.4, 0.12, 'rgba(92,150,88,.8)');
+          continue;
+        }
+        const glass = ctx.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+        glass.addColorStop(0, '#d6eef2'); glass.addColorStop(0.6, '#a9ccd6'); glass.addColorStop(1, '#7fa5b3');
+        ctx.fillStyle = glass;
+        ctx.beginPath(); ctx.moveTo(x - w / 2, y + 0.3); ctx.lineTo(x - w / 2, y - h + w / 2); ctx.quadraticCurveTo(x, y - h - w * 0.6, x + w / 2, y - h + w / 2); ctx.lineTo(x + w / 2, y + 0.3); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = 'rgba(90,150,90,.9)'; ctx.fillRect(x - w / 2, y - h * 0.55, w, 0.08);
+        ctx.fillStyle = 'rgba(140,230,240,.85)';
+        for (let wy = y - h + 0.4; wy < y + 0.1; wy += 0.3) if (random(Math.round(x * 30), Math.round(wy * 30), 53) < 0.55) ctx.fillRect(x - w / 2 + 0.06, wy, w - 0.12, 0.05);
+        if (i === 0) {
+          // A beacon on the central spire.
+          ctx.fillStyle = `rgba(150,240,255,${0.55 + Math.sin(time / 400) * 0.35})`;
+          ctx.beginPath(); ctx.arc(x, y - h - w * 0.35, 0.12, 0, TAU); ctx.fill();
+        } else if (i % 5 === 1) {
+          // Sky bridges to the centre.
+          ctx.strokeStyle = 'rgba(200,230,236,.55)'; ctx.lineWidth = 0.07;
+          ctx.beginPath(); ctx.moveTo(x, y - h * 0.6); ctx.lineTo(group.x, group.y - 2.2); ctx.stroke();
+        }
+      } else if (era === 5) {
         // Modern towers of steel and glass, windows lit.
         const w = 0.46 + r * 0.24, h = i === 0 ? 2.4 : 0.9 + r * 1.3;
         ctx.fillStyle = r < 0.5 ? '#9aaab6' : '#aeb7bb'; ctx.fillRect(x - w / 2, y - h, w, h + 0.3);
@@ -778,8 +1039,77 @@ export class WorldView {
     }
     // The society's banner flies over its centre.
     ctx.strokeStyle = '#6b654f'; ctx.lineWidth = 0.05;
-    ctx.beginPath(); ctx.moveTo(group.x, group.y - 0.1); ctx.lineTo(group.x, group.y - (era === 5 ? 3 : 1.6)); ctx.stroke();
-    ctx.fillStyle = group.color; ctx.fillRect(group.x, group.y - (era === 5 ? 3 : 1.6), 0.45, 0.26);
+    const pole = era === 6 ? 4.8 : era === 5 ? 3 : 1.6;
+    ctx.beginPath(); ctx.moveTo(group.x, group.y - 0.1); ctx.lineTo(group.x, group.y - pole); ctx.stroke();
+    ctx.fillStyle = group.color; ctx.fillRect(group.x, group.y - pole, 0.45, 0.26);
+  }
+
+  /**
+   * War on the map: scorched battlefields that fade over the years after, the
+   * line between the principal enemies, and armies marching to the front
+   * while a campaign is under way.
+   */
+  drawWars(ctx, time) {
+    const wars = this.snapshot.diplomacy?.wars;
+    if (!wars?.length) return;
+    const day = this.snapshot.day, year = 120;
+    for (const war of wars) {
+      const age = war.end === null ? 0 : (day - war.end) / year;
+      if (age > 4) continue;
+      for (const site of war.sites) {
+        if (!this.visible(site.x, site.y, 4)) continue;
+        // Scars fade over four years of peace.
+        const fade = clamp(1 - age / 4, 0, 1) * clamp(1 - (day - site.day) / (year * 12), 0.3, 1);
+        for (let k = 0; k < 5; k++) {
+          const ox = (random(Math.round(site.x * 10), k, 71) - 0.5) * 2.2, oy = (random(Math.round(site.y * 10), k, 72) - 0.5) * 1.6;
+          ellipse(ctx, site.x + ox, site.y + oy, 0.5 + random(k, site.day, 73) * 0.5, 0.3 + random(k, site.day, 74) * 0.25, `rgba(66,52,40,${0.34 * fade})`);
+        }
+        // Craters and burnt stumps.
+        ctx.fillStyle = `rgba(40,34,30,${0.55 * fade})`;
+        for (let k = 0; k < 4; k++) ctx.fillRect(site.x + (random(site.day, k, 75) - 0.5) * 2, site.y + (random(site.day, k, 76) - 0.5) * 1.4, 0.12, 0.26);
+      }
+      if (war.end !== null) continue;
+      const attacker = this.groups.get(war.attacker), defender = this.groups.get(war.defender);
+      if (!attacker || !defender) continue;
+      const front = war.front;
+      if (this.visible(front.x, front.y, 30) || this.visible(attacker.x, attacker.y, 20) || this.visible(defender.x, defender.y, 20)) {
+        ctx.strokeStyle = 'rgba(170,58,44,.45)'; ctx.lineWidth = 0.14; ctx.setLineDash([0.5, 0.4]);
+        ctx.beginPath(); ctx.moveTo(attacker.x, attacker.y); ctx.lineTo(front.x, front.y); ctx.lineTo(defender.x, defender.y); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (war.phase === 'campaign') {
+        // Columns march out from each side toward the front and back.
+        for (const [group, sign] of [[attacker, 1], [defender, -1]]) {
+          const dx = front.x - group.x, dy = front.y - group.y, length = Math.hypot(dx, dy) || 1;
+          for (let k = 0; k < 3; k++) {
+            const t = 0.35 + 0.6 * ((Math.sin(time / 1000 * 0.25 + k * 1.3 + group.id) + 1) / 2);
+            const x = group.x + dx * t + (-dy / length) * (k - 1) * 0.6, y = group.y + dy * t + (dx / length) * (k - 1) * 0.6;
+            if (!this.visible(x, y, 2)) continue;
+            ellipse(ctx, x + 0.1, y + 0.2, 0.42, 0.12, 'rgba(40,40,30,.25)');
+            ctx.fillStyle = '#4c4a40'; ctx.fillRect(x - 0.34, y - 0.2, 0.68, 0.34);
+            ctx.fillStyle = group.color; ctx.fillRect(x - 0.3, y - 0.16, 0.6, 0.12);
+            ctx.strokeStyle = '#3c3a33'; ctx.lineWidth = 0.05;
+            ctx.beginPath(); ctx.moveTo(x + 0.3 * sign, y - 0.2); ctx.lineTo(x + 0.3 * sign, y - 0.7); ctx.stroke();
+            ctx.fillStyle = group.color; ctx.fillRect(x + 0.3 * sign, y - 0.7, 0.28 * sign, 0.18);
+          }
+        }
+      }
+      if (!this.visible(front.x, front.y, 3)) continue;
+      // Crossed swords over the front, pulsing while armies are in the field.
+      const pulse = war.phase === 'campaign' ? 1 + Math.sin(time / 260) * 0.12 : 0.8;
+      ctx.save(); ctx.translate(front.x, front.y - 0.4); ctx.scale(pulse, pulse);
+      ellipse(ctx, 0, 0, 0.7, 0.7, war.phase === 'campaign' ? 'rgba(178,64,46,.82)' : 'rgba(150,110,90,.7)');
+      ctx.strokeStyle = '#f3e7cf'; ctx.lineWidth = 0.1; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-0.38, -0.38); ctx.lineTo(0.38, 0.38); ctx.moveTo(0.38, -0.38); ctx.lineTo(-0.38, 0.38); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-0.2, 0.32); ctx.lineTo(-0.34, 0.18); ctx.moveTo(0.2, 0.32); ctx.lineTo(0.34, 0.18); ctx.stroke();
+      ctx.lineCap = 'butt';
+      ctx.restore();
+      if (this.scale > 5) {
+        ctx.font = `600 ${10 / this.scale}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillStyle = '#f7e9d2'; ctx.strokeStyle = 'rgba(90,40,30,.85)'; ctx.lineWidth = 2.6 / this.scale;
+        ctx.strokeText(war.name, front.x, front.y + 0.5); ctx.fillText(war.name, front.x, front.y + 0.5);
+      }
+    }
   }
 
   /** Someone at sea: a canoe, a sailing ship, a steamship or an aircraft, as their society has. */
@@ -1258,6 +1588,7 @@ export class WorldView {
     this.drawRegionLabels(ctx);
     this.drawRoutes(ctx);
     this.drawHarbours(ctx, time);
+    this.drawWars(ctx, time);
     if (this.overlay === 'relations') this.drawRelations(ctx);
     for (const group of this.snapshot.groups) {
       if (this.visible(group.x, group.y, 18)) this.drawSettlement(ctx, group, time);
@@ -1271,11 +1602,29 @@ export class WorldView {
       const p = this.positions.get(agent.id);
       if (p) this.drawAgent(ctx, agent, p, time);
     }
+    this.drawOrbit(ctx, time);
     this.drawCountryLabels(ctx);
     this.drawGroupLabels(ctx);
     if (['relations', 'knowledge'].includes(this.overlay)) this.drawBeliefs(ctx);
     ctx.restore();
     this.drawCompass(ctx);
+  }
+
+  /** Satellites launched by spacefaring societies, crossing the sky in their colours. */
+  drawOrbit(ctx, time) {
+    const spacefaring = this.snapshot.groups.filter(group => (group.mastery?.transport || 0) >= 8 || (group.mastery?.information || 0) >= 9);
+    if (!spacefaring.length) return;
+    const { width, height } = this.snapshot, t = time / 1000;
+    let n = 0;
+    for (const group of spacefaring) for (let k = 0; k < 3 && n < 14; k++, n++) {
+      const speed = 0.012 + random(group.id, k, 91) * 0.01, phase = random(group.id, k, 92), tilt = (random(group.id, k, 93) - 0.5) * 0.8;
+      const u = (t * speed + phase) % 1, x = u * width, y = height * (0.15 + random(group.id, k, 94) * 0.7) + (x - width / 2) * tilt * 0.3;
+      if (!this.visible(x, y, 2)) continue;
+      ctx.strokeStyle = 'rgba(230,240,245,.25)'; ctx.lineWidth = 0.08;
+      ctx.beginPath(); ctx.moveTo(x - 3, y - 3 * tilt * 0.3); ctx.lineTo(x, y); ctx.stroke();
+      ctx.fillStyle = '#eef4f6'; ctx.fillRect(x - 0.12, y - 0.12, 0.24, 0.24);
+      ctx.fillStyle = group.color; ctx.fillRect(x - 0.45, y - 0.06, 0.3, 0.12); ctx.fillRect(x + 0.15, y - 0.06, 0.3, 0.12);
+    }
   }
 
   drawCompass(ctx) {

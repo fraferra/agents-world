@@ -158,6 +158,22 @@ export function appraise(sim, agent, kind, detail = {}) {
       feel(agent, 'fear', .4); feel(agent, 'anger', .3);
       recordEpisode(sim, agent, { type: 'war', text: `Wounded when ${name} raided us.`, valence: -.85, salience: .8 });
       break;
+    case 'victory':
+      feel(agent, 'pride', .4); feel(agent, 'joy', .3); feel(agent, 'fear', -.2);
+      recordEpisode(sim, agent, { type: 'war', text: detail.text, valence: .6, salience: .75 });
+      break;
+    case 'defeat':
+      feel(agent, 'grief', .3); feel(agent, 'anger', .35); feel(agent, 'pride', -.3);
+      recordEpisode(sim, agent, { type: 'war', text: detail.text, valence: -.8, salience: .85 });
+      break;
+    case 'peace':
+      feel(agent, 'joy', .25); feel(agent, 'fear', -.3);
+      recordEpisode(sim, agent, { type: 'war', text: detail.text, valence: .3, salience: .6 });
+      break;
+    case 'exile':
+      feel(agent, 'grief', .35); feel(agent, 'fear', .2);
+      recordEpisode(sim, agent, { type: 'hardship', text: detail.text, valence: -.7, salience: .85 });
+      break;
     case 'discovery': {
       // The first discoveries are formative; later ones become part of the routine.
       const novelty = 1 / (1 + agent.psyche.record.discovered * .25);

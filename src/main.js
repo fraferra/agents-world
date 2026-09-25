@@ -9,6 +9,7 @@ import { claimRadius, organisationalCapacity } from './expansion.js';
 import { ECONOMIES, economyOf, gini } from './economy.js';
 import { careLevel, diseaseLoad } from './lifecourse.js';
 import { RESOURCE_INFO } from './resources.js';
+import { CAUSES, GOALS } from './conflict.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -291,6 +292,37 @@ function renderCompanies(groups) {
   liveMarkup(content, companies.length ? `<div class="idea-grid">${companies.map(company => `<article class="idea-card"><div class="idea-meta"><span>${escape(title(company.sector))}${company.branches.length >= 3 ? ' · corporation' : ''}</span><span>since ${calendar(company.founded)}</span></div><h3>${escape(company.name)}</h3><p class="idea-description">Owned by ${escape(personName(company.ownerId))}${company.ownerId !== company.founderId ? ` · founded by ${escape(personName(company.founderId))}` : ''} · based in ${escape(groupName(company.homeId))}</p><p class="recipe-line">Operates in ${company.branches.map(id => escape(groupName(id))).join(' · ')}</p><dl class="relation-measures"><div><dt>Capital</dt><dd>${number(company.capital)}</dd></div><div><dt>Revenue</dt><dd>${number(company.revenue)}/yr</dd></div><div><dt>Profit</dt><dd>${number(company.profit)}/yr</dd></div><div><dt>Workers</dt><dd>${number(company.employees)}</dd></div></dl></article>`).join('')}</div>` : '<div class="empty-state idea-empty"><span>▤</span>No companies yet.<br>Once a society knows commerce, its ambitious and well-off found firms.</div>');
 }
 
+/** Conflicts: every recorded war, ongoing first, with its cause, aim, course and outcome. */
+function renderConflicts(groups) {
+  const content = $('#civilization-content'), ids = new Set(groups.map(group => group.id));
+  const all = snapshot.diplomacy?.wars || [];
+  const shown = (civilizationSociety === 'all' ? all : all.filter(war => [...war.attackers, ...war.defenders, war.attacker, war.defender].some(id => ids.has(id))))
+    .slice().sort((a, b) => (a.end === null) === (b.end === null) ? (b.end ?? b.start) - (a.end ?? a.start) : a.end === null ? -1 : 1);
+  const ongoing = all.filter(war => war.end === null);
+  const deaths = all.reduce((sum, war) => sum + war.casualties[0] + war.casualties[1], 0), refugees = all.reduce((sum, war) => sum + war.refugees, 0);
+  $('#civilization-summary').textContent = `${number(ongoing.length)} ${ongoing.length === 1 ? 'war' : 'wars'} under way · ${number(all.length - ongoing.length)} ended · ${number(deaths)} killed in recorded wars · ${number(refugees)} refugees`;
+  const nameOf = (war, id) => snapshot.groups.find(group => group.id === id)?.name || war.names?.[id] || 'a vanished society';
+  const colorOf = id => color(snapshot.groups.find(group => group.id === id)?.color);
+  const side = (war, list) => list.map(id => `<span class="conflict-party"><i class="society-dot" style="background:${colorOf(id)}"></i>${escape(nameOf(war, id))}</span>`).join('');
+  const years = war => ((war.end ?? snapshot.day) - war.start) / DAYS;
+  const span = war => { const y = years(war); return y < 1 ? `${Math.max(1, Math.round(y * 12))} months` : `${y.toFixed(1)} years`; };
+  const weary = (value, label) => `<div class="conflict-weariness"><span>${escape(label)}</span><span class="bar"><i style="width:${percent(Math.min(1.5, value) / 1.5 * 100)}%"></i></span></div>`;
+  liveMarkup(content, `<div class="diplomacy-totals"><span><strong>${number(ongoing.length)}</strong> wars under way</span><span><strong>${number(snapshot.diplomacy?.warsStarted)}</strong> wars begun</span><span><strong>${number(snapshot.diplomacy?.warDeaths)}</strong> war deaths</span><span><strong>${number(refugees)}</strong> refugees</span></div>${shown.length ? `<div class="idea-grid">${shown.map(war => {
+    const lead = war.score > 5 ? nameOf(war, war.attacker) : war.score < -5 ? nameOf(war, war.defender) : null;
+    const balance = 50 + war.score / 2;
+    return `<article class="idea-card conflict-card ${war.end === null ? 'ongoing' : 'ended'}"><div class="idea-meta"><span>${war.end === null ? `⚔ ${war.phase === 'campaign' ? 'Campaign under way' : 'Lull in the fighting'}` : `Ended · ${escape(title(war.outcome?.terms || ''))}`}</span><span>${calendar(war.start).replace(/ · Day.*/, '')}${war.end === null ? ' – now' : ` – ${calendar(war.end).replace(/ · Day.*/, '').replace('Year ', '')}`} · ${span(war)}</span></div>
+      <h3>${escape(war.name)}</h3>
+      <div class="conflict-sides"><div>${side(war, war.attackers.length ? war.attackers : [war.attacker])}</div><span class="versus">against</span><div>${side(war, war.defenders.length ? war.defenders : [war.defender])}</div></div>
+      <p class="idea-description"><strong>Cause:</strong> ${escape(CAUSES[war.cause]?.label || title(war.cause))}. ${escape(war.reason)}<br><strong>Aim:</strong> ${escape(nameOf(war, war.attacker))} fights to ${escape(GOALS[war.goal] || war.goal)}.</p>
+      <div class="conflict-balance" title="Balance of the war"><i style="width:${percent(balance)}%;background:${colorOf(war.attacker)}"></i><i style="width:${percent(100 - balance)}%;background:${colorOf(war.defender)}"></i></div>
+      <p class="quiet-note">${lead ? `${escape(lead)} ${war.end === null ? 'has the upper hand' : 'had the upper hand'}` : 'Neither side has the advantage'} · ${number(war.battles)} battles · ${number(war.casualties[0])} and ${number(war.casualties[1])} dead${war.refugees ? ` · ${number(war.refugees)} refugees` : ''}</p>
+      ${war.end === null ? `${weary(war.weariness[0], `${nameOf(war, war.attacker)} war-weariness`)}${weary(war.weariness[1], `${nameOf(war, war.defender)} war-weariness`)}` : `<p class="idea-description conflict-outcome">${escape(war.outcome?.text || '')}</p>`}
+      <button class="text-button" data-focus="${Number(war.front.x)},${Number(war.front.y)}">${war.end === null ? 'See the front' : 'See the battlefield'} ↗</button>
+    </article>`;
+  }).join('')}</div>` : '<div class="empty-state idea-empty"><span>⚔</span>No wars recorded yet.<br>Wars begin over land, hunger, minerals, faith, ideology, revenge, ambition or independence.</div>'}`);
+  $('#civilization-footnote').textContent = 'Wars are fought in campaigns separated by lulls. Battles shift the balance; losses, hunger and time wear each side down against its resolve, and the side that tires first seeks terms. Victory hardens a society; defeat can bring down its government, and a proud loser may seek revenge.';
+}
+
 /** Technologies no one wrote in advance: research at the frontier, then every breakthrough made. */
 function renderBreakthroughs(groups) {
   const content = $('#civilization-content'), list = snapshot.breakthroughs?.list || [];
@@ -380,7 +412,9 @@ function tributeMarkup(group) {
   const name = id => snapshot.groups.find(other => other.id === id)?.name || 'a vanished society';
   const overlord = relations.find(relation => relation.overlord !== group.id);
   const ruled = relations.filter(relation => relation.overlord === group.id).length;
-  return `${overlord ? ` · pays tribute to ${escape(name(overlord.overlord))}` : ''}${ruled ? ` · rules ${number(ruled)} ${ruled === 1 ? 'tributary' : 'tributaries'}${ruled >= 3 ? ' (empire)' : ''}` : ''}`;
+  const wars = (snapshot.diplomacy?.wars || []).filter(war => war.end === null && (war.attackers.includes(group.id) || war.defenders.includes(group.id)));
+  const fighting = wars.map(war => `<br><span class="war-note">⚔ ${escape(war.name)} · year ${Math.floor((snapshot.day - war.start) / DAYS) + 1} · ${war.attackers.includes(group.id) ? 'attacking' : 'defending'}</span>`).join('');
+  return `${overlord ? ` · pays tribute to ${escape(name(overlord.overlord))}` : ''}${ruled ? ` · rules ${number(ruled)} ${ruled === 1 ? 'tributary' : 'tributaries'}${ruled >= 3 ? ' (empire)' : ''}` : ''}${fighting}`;
 }
 
 function researchMarkup(group) {
@@ -563,6 +597,7 @@ function renderCivilization() {
   }
   if (civilizationTab === 'breakthroughs') { renderBreakthroughs(groups); return; }
   if (civilizationTab === 'countries') { renderCountries(groups); return; }
+  if (civilizationTab === 'conflicts') { renderConflicts(groups); return; }
   if (civilizationTab === 'parties') { renderParties(groups); return; }
   if (civilizationTab === 'companies') { renderCompanies(groups); return; }
   if (civilizationTab === 'knowledge') {
@@ -730,7 +765,7 @@ $$('[data-speed]').forEach(button => button.addEventListener('click', act(() => 
 $$('[data-overlay]').forEach(button => button.addEventListener('click', () => {
   $$('[data-overlay]').forEach(other => { other.classList.toggle('active', other === button); other.setAttribute('aria-pressed', String(other === button)); });
   view.setOverlay(button.dataset.overlay);
-  const legends = { natural: '<span><i class="legend-citizen"></i> Individual</span><span><i class="legend-forest"></i> Woodland</span><span><i style="background:#b0aa78"></i> Cleared</span><span><i style="background:#d2bf6e"></i> Fields</span><span><i style="background:#ded0a4"></i> Road</span><span><i style="background:#4b4a4c"></i> Railway</span><span><i style="background:#d6e8ec"></i> Sea route</span><span><i style="background:#eef0f4"></i> Air route</span><span><i class="legend-water"></i> Water</span>', food: '<span><i style="background:#cbbd75"></i> Depleted</span><span><i style="background:#6cab79"></i> Abundant food</span>', societies: '<span><i class="legend-citizen"></i> Society influence</span><span>Colors identify groups</span>', knowledge: '<span><i style="background:#ccac60"></i> Ideas</span><span><i style="background:#7fa58a"></i> Teaching</span><span>Exchanges · last 45 days</span>', relations: '<span><i style="background:#b46f59"></i> War</span><span><i style="background:#91bda3"></i> Alliance</span><span><i style="background:#e2bb75"></i> Trade</span><span>◈ Belief tradition</span>', industry: '<span><i style="background:#bd875c"></i> Ore</span><span><i style="background:#d2d3c4"></i> Stone</span><span><i style="background:#c5b777"></i> Fertile soil</span><span><i style="background:#3a3836"></i> Coal</span><span><i style="background:#9fc25a"></i> Uranium</span>' };
+  const legends = { natural: '<span><i class="legend-citizen"></i> Individual</span><span><i class="legend-forest"></i> Woodland</span><span><i style="background:#b0aa78"></i> Cleared</span><span><i style="background:#d2bf6e"></i> Fields</span><span><i style="background:#ded0a4"></i> Road</span><span><i style="background:#4b4a4c"></i> Railway</span><span><i style="background:#d6e8ec"></i> Sea route</span><span><i style="background:#eef0f4"></i> Air route</span><span><i style="background:#b2402e"></i> War front</span><span><i style="background:#42342a"></i> Battlefield</span><span><i style="background:#58804a"></i> Green belt</span><span><i style="background:#3a5478"></i> Solar field</span><span><i class="legend-water"></i> Water</span>', food: '<span><i style="background:#cbbd75"></i> Depleted</span><span><i style="background:#6cab79"></i> Abundant food</span>', societies: '<span><i class="legend-citizen"></i> Society influence</span><span>Colors identify groups</span>', knowledge: '<span><i style="background:#ccac60"></i> Ideas</span><span><i style="background:#7fa58a"></i> Teaching</span><span>Exchanges · last 45 days</span>', relations: '<span><i style="background:#b46f59"></i> War</span><span><i style="background:#91bda3"></i> Alliance</span><span><i style="background:#e2bb75"></i> Trade</span><span>◈ Belief tradition</span>', industry: '<span><i style="background:#bd875c"></i> Ore</span><span><i style="background:#d2d3c4"></i> Stone</span><span><i style="background:#c5b777"></i> Fertile soil</span><span><i style="background:#3a3836"></i> Coal</span><span><i style="background:#9fc25a"></i> Uranium</span>' };
   $('#map-legend').innerHTML = legends[button.dataset.overlay] || legends.natural;
 }));
 $('#zoom-in').addEventListener('click', () => view.zoomBy(1.35));
@@ -869,6 +904,12 @@ document.addEventListener('click', event => {
     knowledgeTab.focus({ preventScroll: true });
     activateCivilization(knowledgeTab);
     $('.civilization-panel').scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'nearest' });
+  }
+  const focusButton = event.target.closest('[data-focus]');
+  if (focusButton) {
+    const [x, y] = focusButton.dataset.focus.split(',').map(Number);
+    following = false; view.focusOn(x, y);
+    $('#world-canvas').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
   const personButton = event.target.closest('[data-person]');
   if (personButton) { selectAgent(Number(personButton.dataset.person)); view.setFollow(selectedId); following = true; renderIndividual(); }

@@ -4,7 +4,7 @@
 import { attemptInnovation, reflectBelief, spreadIdeas, innovationEffects, knowsIdea } from './innovation.js';
 import { tradeAccess, recordTrade } from './diplomacy.js';
 import { routeFactor, plannedRoute, seafaring } from './infrastructure.js';
-import { advances, canPushFrontier, proposeFrontier, completeFrontier, restoreSocietyFrontier } from './breakthroughs.js';
+import { advances, canPushFrontier, proposeFrontier, completeFrontier, restoreSocietyFrontier, fieldMastery } from './breakthroughs.js';
 import { ownsCompany } from './enterprise.js';
 import { leadsParty } from './polity.js';
 import { keptShare, addWealth, standing } from './economy.js';
@@ -97,7 +97,9 @@ const TRADE_GOODS = { tools: 2, cloth: 2, remedies: 3, goods: 1.5, metal: 3, bri
 const valueKeys = ['security', 'belonging', 'autonomy', 'mastery', 'care'];
 const roleNames = { foraging: 'Forager', farming: 'Farmer', forestry: 'Forester', mining: 'Miner', crafting: 'Artisan', scholarship: 'Scholar', medicine: 'Healer', leadership: 'Organiser' };
 // Occupations of a modern society, which appear as its institutions do.
-export const MODERN_ROLES = Object.freeze(['Doctor', 'Physician', 'Scientist', 'Programmer', 'Teacher', 'Engineer', 'Factory worker', 'Smith', 'Herder', 'Fisher', 'Sailor', 'Merchant', 'Official', 'Soldier', 'Politician', 'Entrepreneur', 'Pilot']);
+export const MODERN_ROLES = Object.freeze(['Doctor', 'Physician', 'Scientist', 'Programmer', 'Teacher', 'Engineer', 'Factory worker', 'Smith', 'Herder', 'Fisher', 'Sailor', 'Merchant', 'Official', 'Soldier', 'Politician', 'Entrepreneur', 'Pilot',
+  // Occupations that only exist once a society's breakthroughs have created them.
+  'Robotics engineer', 'Machine minder', 'AI researcher', 'Data scientist', 'Geneticist', 'Agronomist', 'Energy engineer', 'Materials scientist', 'Drone operator', 'Displaced worker']);
 const allowedRoles = new Set(['Apprentice', 'Generalist', ...Object.values(roleNames), ...MODERN_ROLES]);
 
 /**
@@ -111,10 +113,20 @@ export function roleOf(sim, agent, group) {
   if (ownsCompany(sim, agent)) return 'Entrepreneur';
   const b = group?.civilization?.buildings || {}, action = agent.mind.policy.action;
   const atWar = group && sim.diplomacy?.relations.some(r => r.status === 'war' && (r.a === group.id || r.b === group.id));
-  if (atWar && agent.age >= 18 && agent.age <= 45 && agent.mind.riskTolerance > .6) return 'Soldier';
+  const mastery = fieldMastery(sim, group);
+  if (atWar && agent.age >= 18 && agent.age <= 45 && agent.mind.riskTolerance > .6) return mastery.weapons >= 6 ? 'Drone operator' : 'Soldier';
   if (agent._afloat) return b.airport ? 'Pilot' : 'Sailor';
   const best = SKILLS.reduce((x, y) => agent.skills[x] >= agent.skills[y] ? x : y);
+  // Where machines do the routine work, the unskilled are displaced unless they tend the machines.
+  const automation = advances(group).automation;
+  if (agent.skills[best] < 20 && automation > .25) return (agent.id * 2654435761 >>> 0) % 100 < automation * 60 ? 'Displaced worker' : 'Machine minder';
   if (agent.skills[best] < 20) return action === 'trade' ? 'Merchant' : 'Generalist';
+  // New specialisms open up with each field's breakthroughs; a person takes one that fits their skill.
+  const pick = list => { const open = list.filter(([depth]) => depth); return open.length ? open[(agent.id * 40503 >>> 0) % open.length][1] : null; };
+  const deep = { crafting: pick([[mastery.machines >= 5, 'Robotics engineer'], [mastery.materials >= 6, 'Materials scientist'], [mastery.energy >= 5, 'Energy engineer']]),
+    scholarship: pick([[mastery.information >= 7, 'AI researcher'], [mastery.information >= 5, 'Data scientist']]), medicine: mastery.medicine >= 5 ? 'Geneticist' : null, farming: mastery.agriculture >= 5 ? 'Agronomist' : null }[best];
+  // Only some of the skilled work at the frontier; the rest keep the older professions.
+  if (deep && agent.skills[best] >= 40 && (agent.id * 2246822519 >>> 0) % 100 < 45) return deep;
   switch (best) {
     case 'medicine': return b.hospital ? 'Doctor' : b.clinic ? 'Physician' : 'Healer';
     case 'scholarship': return b.datacenter ? (agent.skills.scholarship >= 50 ? 'Scientist' : 'Programmer') : b.school && action === 'teach' ? 'Teacher' : 'Scholar';
@@ -301,7 +313,8 @@ export function industry(group) {
   return {
     powered: power, machines, mechanization: 1 + machines * .6, electric: power ? 1.3 : 1,
     fertiliser: civ.technologies.includes('chemistry') ? 1.6 : 1, computing: b.datacenter > 0 && power ? 1.6 : 1, reach: b.railway > 0 ? 1.5 : 1,
-    smog: clamp(Math.min(4, b.factory || 0) * .12 + (coalPower ? Math.min(2, b.powerplant) * .18 : 0) + Math.min(2, b.railway || 0) * .04 + advances(group).pollution),
+    // Clean energy breakthroughs (dams, solar, fusion) clear the smoke of coal and industry.
+    smog: clamp((Math.min(4, b.factory || 0) * .12 + (coalPower ? Math.min(2, b.powerplant) * .18 : 0) + Math.min(2, b.railway || 0) * .04) * (1 - clamp(advances(group).energy * .6, 0, .8)) + advances(group).pollution),
   };
 }
 const IDLE = Object.freeze({ powered: false, machines: 0, mechanization: 1, electric: 1, fertiliser: 1, computing: 1, reach: 1, smog: 0 });

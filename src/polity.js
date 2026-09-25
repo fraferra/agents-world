@@ -18,6 +18,7 @@
  */
 import { tributariesOf, overlordOf, relationBetween } from './diplomacy.js';
 import { advances } from './breakthroughs.js';
+import { warMood } from './conflict.js';
 
 export const AXES = Object.freeze(['collectivism', 'hierarchy', 'innovation', 'martial', 'piety', 'expansion']);
 const round = value => Math.round(value * 1e4) / 1e4 || 0;
@@ -63,7 +64,12 @@ function partyName(sim, ideology, group) {
   };
   const forms = ['Party', 'League', 'Union', 'Movement', 'Alliance', 'Front', 'Congress'];
   // A green movement grows where industry fouls the air and people want change.
-  const core = advances(group).pollution > .15 && ideology.innovation > .5 && sim._random() < .3 ? 'Green' : pick(cores[key]);
+  // New movements answer new technologies: greens where industry fouls the air, and where
+  // machines take the work, champions of a basic income, humanists against automation, or technocrats for it.
+  const fx = advances(group);
+  let core = pick(cores[key]);
+  if (fx.pollution > .15 && ideology.innovation > .5 && sim._random() < .3) core = 'Green';
+  else if (fx.automation > .2 && sim._random() < .45) core = ideology.collectivism > .55 ? 'Basic Income' : ideology.innovation < .45 ? pick(['Humanist', 'Neo-Luddite']) : pick(['Technocratic', 'Transhumanist', 'Futurist']);
   const adjective = Math.abs(lean2) > .08 && sim._random() < .6 ? `${adjectives[second]} ` : '';
   let name = `${adjective}${core} ${pick(forms)}`.replace(/^(\w+) \1 /, '$1 ');
   if (sim.polity.parties.some(party => party.groupId === group.id && party.name === name)) name = `New ${name}`;
@@ -97,6 +103,9 @@ function politics(sim, group, hooks) {
   if (!organised) { if (parties.length) sim.polity.parties = sim.polity.parties.filter(party => party.groupId !== group.id); return; }
   const adults = group.members.map(id => sim._agentMap.get(id)).filter(agent => agent && agent.age >= 18);
   const views = new Map(adults.map(agent => [agent.id, stance(agent, group)]));
+  // War moves opinion: people rally at first, tire as it drags on, and turn from war after a defeat.
+  const war = warMood(sim, group);
+  if (war.rally || war.weariness || war.defeat) for (const view of views.values()) view.martial = clamp(view.martial + war.rally * .12 - war.weariness * .25 - war.defeat * .15);
   // Support: each adult backs the nearest party.
   for (const party of parties) party.support = 0;
   let unrepresented = [];
@@ -151,7 +160,7 @@ function politics(sim, group, hooks) {
     // Discontent under an unelected government can boil over.
     const people = adults.length || 1;
     const hardship = adults.filter(agent => agent.hunger > 40 || (agent._stress || 0) > 80).length / people;
-    const unrest = clamp(hardship + advances(group).unrest * 2 + Math.max(0, leading.share - ruling.share));
+    const unrest = clamp(hardship + advances(group).unrest * 2 + Math.max(0, leading.share - ruling.share) + war.weariness * .3 + war.defeat * .3);
     if (leading.share > ruling.share * 1.5 && sim._random() < unrest * .15) {
       sim.polity.revolutions++;
       take(leading, `Revolution in ${group.name}: the ${leading.name} overthrows the ${ruling.name}.`);
@@ -238,6 +247,40 @@ function countries(sim) {
         sim._event('group', `${other.name} accepts the rule of ${country.name} by treaty.`, { groupId: other.id });
       }
     }
+  }
+}
+
+/**
+ * Defeat in war shakes a government. In a democracy the governing party loses
+ * office to the strongest opposition; under an unelected government defeat can
+ * spark a revolution. Without parties, the leader who lost the war is deposed.
+ */
+export function defeatShock(sim, group, war) {
+  if (!sim.polity) initializePolity(sim);
+  const culture = group.civilization.culture;
+  if (!culture) return;
+  const current = partiesOf(sim, group), ruling = current.find(party => party.inPower);
+  const opposition = current.filter(party => !party.inPower).sort((a, b) => b.support - a.support)[0];
+  const democratic = culture.norms.hierarchy < .55;
+  const install = (party, text) => {
+    for (const other of current) other.inPower = other === party;
+    party.since = sim.day; party.wins++;
+    const leader = sim._agentMap.get(party.leaderId);
+    if (leader?.groupId === group.id) { culture.leaderId = leader.id; culture.leaderSince = sim.day; }
+    sim._event('group', text, { groupId: group.id, ...(leader ? { agentId: leader.id } : {}) });
+  };
+  if (ruling && opposition && democratic) {
+    for (const party of current) party.lastElection = sim.day;
+    sim.polity.elections++;
+    install(opposition, `Defeat in ${war.name} brings down the ${ruling.name}; the ${opposition.name} forms a new government in ${group.name}.`);
+  } else if (ruling && opposition && sim._random() < .45) {
+    sim.polity.revolutions++;
+    install(opposition, `Revolution in ${group.name} after defeat in ${war.name}: the ${opposition.name} overthrows the ${ruling.name}.`);
+    culture.norms.hierarchy = round(clamp(culture.norms.hierarchy - .1));
+  } else if (!current.length && culture.leaderId && sim._random() < .5) {
+    const deposed = sim._agentMap.get(culture.leaderId);
+    culture.leaderId = null; culture.leaderSince = sim.day;
+    if (deposed) sim._event('group', `${deposed.name} is deposed as leader of ${group.name} after defeat in ${war.name}.`, { groupId: group.id, agentId: deposed.id });
   }
 }
 

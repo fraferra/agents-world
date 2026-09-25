@@ -58,7 +58,45 @@ Trade requires complementary needs: one community has surplus tools and needs fo
 
 Nearby societies establish contact. Trust grows through peaceful contact and actual trade; enough trust and low tension permit alliances. Scarcity, overlap in resource access, grievances, relative capability, and closed or militant doctrines can raise tension. Doctrine differences matter together with attitudes and circumstances, not merely because two societies have different belief names. Open, cooperative traditions can support trade and peace.
 
-Sustained tension can lead to war. Military effectiveness depends on available healthy adults, provisions, equipment, solidarity, and generated combat designs. Raids spend food, damage real adults' health and energy, transfer existing supplies, and sometimes destroy infrastructure. People can die from combat; memories and trust respond to attacks. Losses, exhaustion, provisioning pressure, or separation through migration lead to truces. The viewer reports real relation status, trust, tension, trade volume, casualties, and recorded events.
+Sustained tension can lead to war. Military effectiveness depends on available healthy adults, provisions, equipment, solidarity, and generated combat designs. Raids spend food, damage real adults' health and energy, transfer existing supplies, and sometimes destroy infrastructure. People can die from combat; memories and trust respond to attacks. The viewer reports real relation status, trust, tension, trade volume, casualties, and recorded events.
+
+### Conflicts: why wars start, how long they last, what they change
+
+Every war has a record (`src/conflict.js`) listed in the Conflicts tab.
+
+**A cause and an aim.** When tension boils over, the cause is read from the situation between the two societies, and the side with the stronger motive attacks:
+
+| Cause | Arises from | The attacker fights to |
+| --- | --- | --- |
+| Contested land | Overlapping claims of expansionist peoples | take the land and make the enemy pay |
+| Hunger | Scarcity; the hungrier side attacks | seize food and stores |
+| Mineral wealth | Coal, uranium or iron between two industrial societies | take the land |
+| Faith, ideology | Distant, closed doctrines; rival parties | impose its ways and a friendly government |
+| Revenge | An earlier war the attacker lost | avenge its defeat |
+| Imperial ambition | A strong, expansionist or martial power | conquer and rule |
+| Refusal to submit | A weak society defying a demand for tribute | force submission and tribute |
+| Independence | A tributary or colony that has grown strong | win its freedom |
+| Trade dispute, provocation, old grievances | Rich trade gone sour, acts of god, lingering tension | extract reparations |
+
+Wars are named for what they are about: the War of a disputed region, the Coal War, a War of Independence, the Second Ashford–Kell War.
+
+**Allies and great wars.** Allies with strong trust, tributaries and fellow members of a country may join either side, defenders more readily than attackers, up to three on a side. A war with five or more belligerents becomes a Great War. Making peace between the two principal enemies ends the whole war.
+
+**Campaigns and lulls.** Armies fight in campaigns of one to three seasons, separated by lulls in which they rarely meet, so a war lasts months to many years. Battles move a war score and the front, and trample and burn the fields around the front. Monthly, each side's war-weariness grows with the years, its dead relative to its strength, hunger, a losing score and shrinking numbers. Its resolve rises with its martial culture, a warlike government, and what is at stake (a war of independence, or the defence of the homeland against conquest). A democracy tires sooner. When weariness passes resolve, a side seeks terms:
+- A clear winner imposes its aim: conquest (small peoples are absorbed), tribute, independence, a friendly government with its norms, or reparations in food and goods (more for plunder; a land war also costs the loser its expansionism).
+- A crushed rising is made to pay tribute again.
+- An exhausted stalemate ends in a white peace.
+
+Overwhelmed sides may still be conquered mid-war, and a nuclear strike ends a war in an armistice.
+
+**What war changes.**
+- *War footing.* Soldiers are fed from the stores, stocks of metal, tools, machines and goods are spent as munitions, and hierarchy creeps up. People near the front are afraid, and the risk-taking young are soldiers (drone operators where weapons breakthroughs run deep).
+- *Refugees.* Families on a losing side flee to the nearest society at peace, which takes them in.
+- *Opinion.* People rally to the flag in a war's first year, then tire. War-weariness pulls opinion away from martial parties, feeds unrest, and can topple an unelected government.
+- *Victory.* The victors grow more martial, expansionist and hierarchical.
+- *Defeat.* A proud martial people nurses a grievance (the seed of a war of revenge); others turn away from war. A defeated democracy's government falls to the opposition. An unelected one may face revolution, or a leader without a party may be deposed.
+- *Memory.* Everyone remembers the victory, the defeat or the peace.
+- *The map.* Fronts are marked with crossed swords, armies march out in their colours during campaigns, and battlefields stay scarred for years.
 
 ## Worlds
 
@@ -113,11 +151,36 @@ The thirty written technologies are only the start (`src/breakthroughs.js`). Onc
 
 Advances sum with diminishing returns and act on the society: production, food, research, health, fertility, combat, trade, clean energy (enough of it powers a town without fuel), and automation. Automated works turn out goods, tools, machines and electronics without workers, and automation spares people's labour. Research advances speed further research, a feedback that can take off where materials and power allow. Weapons advances make a society more martial; information advances more inventive. Breakthroughs spread to trade partners, allies, tributaries and colonies whose own knowledge can take them up, so the same invention may appear in several places at once (hence "Radio III").
 
+**How breakthroughs change a society and its land.** A society's mastery of a field is the depth of its deepest breakthrough there. It shows on the map and in the lives of its people.
+- *The city.* Past depth 7, cities become cities of the future: glass spires with rooftop gardens, domes and sky bridges.
+- *Field works.* Around each city stands one work per field it has pushed far, at the stage it has reached:
+  - energy: wind turbines, then solar towers, then fusion plants
+  - agriculture: greenhouses, then vertical farms, then biodomes
+  - information: a radio mast, then a data campus, then a thinking machine
+  - also robot works, motorway interchanges and spaceports (and, deep enough, a space elevator), research hospitals, military bases, civic domes, and spires of smart matter
+- *Orbit.* Spacefaring societies put satellites in orbit.
+- *The land.* Ring roads and motorways circle cities, and solar fields cover open ground.
+  - Where deep agriculture and clean energy spare the land, or synthetic materials replace mining, forests regrow and mines close, and a green belt appears.
+  - Pollution saturates, and clean energy offsets it. Where pollution remains high, woods die back and the land around a town greys.
+  - A green government with clean power replants as policy.
+- *Work.* Skilled people take the new specialisms: robotics, energy and materials engineers, AI researchers and data scientists, geneticists, agronomists.
+- *Automation.* It displaces the unskilled. A welfare state or a communal culture shares its dividend with them. Otherwise they grow angry and stressed, and may leave.
+- *Politics.* New movements answer: a basic income, humanist or neo-Luddite resistance to automation, technocrats and transhumanists for it.
+- *Culture.* Each field nudges norms: transport toward trade and expansion, social institutions toward equality and community, medicine toward care.
+
 Industry also moves culture. Factories and railways raise innovation, trade and hierarchy and weaken tradition and communal norms. They can make a society a *metropolis* (40+ people, 20+ buildings, a factory and railways), and they give rise to new customs such as machine works and iron-and-glass halls. A silo makes a society more martial.
 
 ## Work, companies, parties and countries
 
-**Occupations.** A person's role comes from their strongest skill, read through their society's institutions and what they do: a healer becomes a physician with a clinic and a doctor with a hospital; a scholar becomes a programmer or scientist with a computer centre, or a teacher at a school; an artisan becomes a smith, then an engineer or factory worker; people at sea are sailors (pilots with an airport); traders are merchants; the risk-taking young are soldiers in wartime. Party leaders are politicians and company owners entrepreneurs.
+**Occupations.** A person's role comes from their strongest skill, read through their society's institutions and what they do:
+- A healer becomes a physician with a clinic and a doctor with a hospital.
+- A scholar becomes a programmer or scientist with a computer centre, or a teacher at a school.
+- An artisan becomes a smith, then an engineer or factory worker.
+- People at sea are sailors (pilots with an airport), and traders are merchants.
+- The risk-taking young are soldiers in wartime.
+- Party leaders are politicians and company owners entrepreneurs.
+- Breakthroughs create further specialisms, from robotics engineers to AI researchers.
+- Where automation is deep, the unskilled become machine minders or displaced workers.
 
 **Companies** (`src/enterprise.js`). In a society that knows commerce, ambitious, open and well-off adults found firms (fewer in communal cultures) around what the town runs: manufacturing, mining, railways, shipping, energy, technology, agriculture or commerce. A founder puts in most of their wealth as capital. Each month a firm earns a share (split among rivals) of the value its sector produced where it operates, or of the services it provides (rail and sea routes carried, power supplied, trade), pays wages to the people in its sector's jobs, and splits the profit between capital and its owner. Capital builds more of the firm's kind of works where they are wanted, and with enough to spare a firm opens branches in trading partners; three or more make it a corporation. Firms that run out of money, or lose money for a year and a half, are wound up; a dead owner's richest adult child inherits.
 

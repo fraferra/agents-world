@@ -13,7 +13,7 @@ import { initializeGlobalCulture, initializeCulture, advanceCulture, cultureLabe
 import { considerExpansion, considerFission } from './expansion.js';
 import { establishKinship, establishColony } from './diplomacy.js';
 import { initializeInfrastructure, advanceInfrastructure, infrastructureStats, restoreInfrastructure, linkBetween, seafaring, reachable, sameLand } from './infrastructure.js';
-import { initializeBreakthroughs, advanceBreakthroughs, breakthroughStats, restoreBreakthroughs } from './breakthroughs.js';
+import { initializeBreakthroughs, advanceBreakthroughs, breakthroughStats, restoreBreakthroughs, fieldMastery } from './breakthroughs.js';
 import { initializeEnterprise, advanceEnterprise, enterpriseStats, restoreEnterprise } from './enterprise.js';
 import { initializePolity, advancePolity, polityStats, restorePolity } from './polity.js';
 import { initializePlayer, playerTurn, playerView, restorePlayer, command as playerCommand } from './player.js';
@@ -1351,7 +1351,8 @@ export class Simulation {
       }, {}),
       groups: this.groups.map((group) => {
         const { id, name, color, x, y, food, wood, shelters, culture } = group;
-        return { id, name, color, x, y, members: [...group.members], food, wood, shelters, culture, civilization: structuredClone(group.civilization) };
+        // Mastery by field is derived for the map, which draws each society's advanced works.
+        return { id, name, color, x, y, members: [...group.members], food, wood, shelters, culture, civilization: structuredClone(group.civilization), mastery: { ...fieldMastery(this, group) } };
       }),
       stats: this._stats(), history: this.history.map((point) => ({ ...point })), events: this.events.map((event) => ({ ...event })),
     };
