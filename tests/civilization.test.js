@@ -5,7 +5,7 @@ import { TECHNOLOGIES, SKILLS, BUILDINGS, RICHNESS, initializeSociety, considerC
 
 function community() {
   const sim = new Simulation({ seed: 'laboratory', population: 8, size: 'compact' });
-  const center = sim._landNear(25.5, 30.5);
+  const center = sim._mainlandNear(48, 32);
   const group = initializeSociety({ id: sim.nextGroupId++, name: 'Test Commons', color: '#809260', ...center, members: sim.agents.map(agent => agent.id), food: 50, wood: 10, shelters: 3, culture: 'Stewardship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
   sim.groups = [group]; sim._groupMap.set(group.id, group);
   for (const agent of sim.agents) {

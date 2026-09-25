@@ -11,7 +11,7 @@ import { organisationalCapacity, considerFission } from '../src/expansion.js';
 
 function camp(size = 10, seed = 'realism') {
   const sim = new Simulation({ seed, population: size, size: 'compact' });
-  const center = sim._landNear(25.5, 30.5);
+  const center = sim._mainlandNear(48, 32);
   const group = initializeSociety({ id: sim.nextGroupId++, name: 'Camp', color: '#809260', ...center, members: sim.agents.map(agent => agent.id), food: 40, wood: 10, shelters: 3, culture: 'Stewardship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
   initializeGroupIdeas(group);
   sim.groups = [group]; sim._groupMap.set(group.id, group);

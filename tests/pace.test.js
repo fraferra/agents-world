@@ -8,7 +8,7 @@ import { PERSONALITY } from '../src/psyche.js';
 
 function society() {
   const sim = new Simulation({ seed: 'research-pace', population: 8, size: 'compact' });
-  const center = sim._landNear(25.5, 30.5);
+  const center = sim._mainlandNear(48, 32);
   const group = initializeSociety({ id: sim.nextGroupId++, name: 'Test Hearth', color: '#809260', ...center, members: sim.agents.map(agent => agent.id), food: 50, wood: 10, shelters: 3, culture: 'Stewardship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
   initializeGroupIdeas(group);
   sim.groups = [group]; sim._groupMap.set(group.id, group);

@@ -1,6 +1,7 @@
 // A small, dependency-free atlas renderer. Simulation coordinates remain in
 // tiles; the camera and illustration never change the simulation itself.
 import { farmRadius, industry } from './civilization.js';
+import { seafaring } from './infrastructure.js';
 
 const TILE = 16;
 const OCEAN = '#587c79';
@@ -185,7 +186,8 @@ export class WorldView {
   zoomAt(factor, x, y) {
     if (!Number.isFinite(factor) || factor <= 0) return;
     const before = this.toWorld(x, y);
-    this.zoom = clamp(this.zoom * factor, 0.65, 7);
+    // Zoom in until a tile is about 48 pixels across, whatever the map size.
+    this.zoom = clamp(this.zoom * factor, 0.65, Math.max(7, 48 / Math.max(0.01, this.baseScale)));
     this.updateScale();
     const after = this.toWorld(x, y);
     this.camera.x += before.x - after.x;
@@ -530,6 +532,20 @@ export class WorldView {
           Math.max(a.y, b.y) < this.viewport.top - 2 || Math.min(a.y, b.y) > this.viewport.bottom + 2) continue;
       ctx.save();
       ctx.lineCap = 'round';
+      if (link.kind === 'sea' || link.kind === 'air') {
+        // Shipping lanes and flight paths arc between ports; a ship or plane plies each one.
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        const bend = link.kind === 'air' ? 0.22 : 0.08, cx = mx - (b.y - a.y) * bend, cy = my + (b.x - a.x) * bend;
+        ctx.strokeStyle = link.kind === 'air' ? 'rgba(236,240,244,.55)' : 'rgba(214,232,236,.6)';
+        ctx.lineWidth = link.kind === 'air' ? 0.08 : 0.12; ctx.setLineDash(link.kind === 'air' ? [0.5, 0.35] : [0.8, 0.5]);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(cx, cy, b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
+        const t = ((this.previousTime || 0) / 1000 / (length * (link.kind === 'air' ? 0.05 : 0.25)) + link.a * 0.37) % 1;
+        const px = (1 - t) ** 2 * a.x + 2 * (1 - t) * t * cx + t * t * b.x, py = (1 - t) ** 2 * a.y + 2 * (1 - t) * t * cy + t * t * b.y;
+        ctx.fillStyle = link.kind === 'air' ? '#f4f6f8' : '#8a6a4a';
+        ctx.beginPath(); ctx.ellipse(px, py, link.kind === 'air' ? 0.35 : 0.4, 0.14, Math.atan2(b.y - a.y, b.x - a.x), 0, TAU); ctx.fill();
+        ctx.restore();
+        continue;
+      }
       if (link.kind === 'rail') {
         const length = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / length, ny = (b.x - a.x) / length;
         ctx.strokeStyle = 'rgba(92,78,62,.85)'; ctx.lineWidth = 0.14;
@@ -722,6 +738,37 @@ export class WorldView {
     ctx.fillStyle = group.color; ctx.fillRect(group.x, group.y - (era === 5 ? 3 : 1.6), 0.45, 0.26);
   }
 
+  /** Someone at sea: a canoe, a sailing ship, a steamship or an aircraft, as their society has. */
+  drawVessel(ctx, agent, x, y, time) {
+    const kind = seafaring(this.groups.get(agent.groupId)).kind || 'canoe';
+    const color = this.groups.get(agent.groupId)?.color || '#e3ce9b';
+    const bob = Math.sin(time * 0.004 + agent.id) * 0.04;
+    ctx.save();
+    ctx.translate(x, y + bob);
+    if (kind === 'aircraft') {
+      ctx.fillStyle = '#e8ecef'; ctx.strokeStyle = '#6f7b83'; ctx.lineWidth = 0.05;
+      ctx.beginPath(); ctx.moveTo(-0.6, 0); ctx.lineTo(0.6, 0); ctx.lineTo(0.7, -0.08); ctx.lineTo(-0.5, -0.1); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-0.1, -0.05); ctx.lineTo(0.1, -0.5); ctx.lineTo(0.25, -0.05); ctx.moveTo(-0.1, -0.02); ctx.lineTo(0.1, 0.45); ctx.lineTo(0.25, 0); ctx.fill(); ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(230,240,240,.5)';
+      ctx.beginPath(); ctx.ellipse(-0.45, 0.12, 0.35, 0.06, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = kind === 'steamship' ? '#4f4b4b' : '#8a6a4a';
+      const length = kind === 'canoe' ? 0.45 : 0.7;
+      ctx.beginPath(); ctx.moveTo(-length, -0.05); ctx.lineTo(length, -0.05); ctx.lineTo(length * 0.75, 0.12); ctx.lineTo(-length * 0.8, 0.12); ctx.closePath(); ctx.fill();
+      if (kind === 'ship') {
+        ctx.fillStyle = '#f1ead2'; ctx.beginPath(); ctx.moveTo(0, -0.08); ctx.lineTo(0, -0.75); ctx.lineTo(0.42, -0.12); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = color; ctx.fillRect(0, -0.85, 0.2, 0.1);
+      } else if (kind === 'steamship') {
+        ctx.fillStyle = '#d9d2c2'; ctx.fillRect(-0.35, -0.3, 0.6, 0.25);
+        ctx.fillStyle = color; ctx.fillRect(0.05, -0.55, 0.14, 0.26);
+        this.drawSmoke(ctx, 0.12, -0.6, time, 'rgba(110,106,100,', 0.4, agent.id);
+      } else {
+        ctx.fillStyle = color; ctx.beginPath(); ctx.arc(0, -0.16, 0.1, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
   /** Rising, fading smoke; `tint` is an rgba prefix such as 'rgba(120,116,110,'. */
   drawSmoke(ctx, x, y, time, tint, scale = 1, seed = 0) {
     for (let k = 0; k < 4; k++) {
@@ -735,7 +782,7 @@ export class WorldView {
   drawIndustry(ctx, group, time = 0) {
     const buildings = group.civilization?.buildings;
     if (!buildings) return;
-    const kinds = ['farm', 'pasture', 'granary', 'workshop', 'lumbermill', 'kiln', 'forge', 'school', 'clinic', 'fishery', 'loom', 'apothecary', 'market', 'library', 'temple', 'observatory', 'hall', 'dock', 'factory', 'railway', 'hospital', 'powerplant', 'datacenter', 'reactor', 'silo'];
+    const kinds = ['farm', 'pasture', 'granary', 'workshop', 'lumbermill', 'kiln', 'forge', 'school', 'clinic', 'fishery', 'loom', 'apothecary', 'market', 'library', 'temple', 'observatory', 'hall', 'dock', 'factory', 'railway', 'hospital', 'powerplant', 'datacenter', 'reactor', 'silo', 'airport'];
     const modern = industry(group), inner = urbanRadius(group);
     if (buildings.walls) {
       // Walls ring the whole settlement.
@@ -746,7 +793,7 @@ export class WorldView {
     for (const kind of kinds) {
       // Several illustrations represent a developed district; exact building
       // counts are available in its society inspector.
-      const count = clamp(Math.floor(buildings[kind] || 0), 0, kind === 'farm' || kind === 'pasture' ? 4 : ['temple', 'observatory', 'hall', 'dock', 'library', 'market', 'railway', 'datacenter', 'reactor', 'silo'].includes(kind) ? 1 : 3);
+      const count = clamp(Math.floor(buildings[kind] || 0), 0, kind === 'farm' || kind === 'pasture' ? 4 : ['temple', 'observatory', 'hall', 'dock', 'library', 'market', 'railway', 'datacenter', 'reactor', 'silo', 'airport'].includes(kind) ? 1 : 3);
       for (let i = 0; i < count; i++, slot++) {
         let position = null;
         for (let attempt = 0; attempt < 12; attempt++) {
@@ -770,7 +817,7 @@ export class WorldView {
           ctx.fillStyle = '#a9b97c'; ctx.fillRect(-1.5, -0.95, 3, 1.9);
           ctx.strokeStyle = '#8a7652'; ctx.lineWidth = 0.1; ctx.strokeRect(-1.5, -0.95, 3, 1.9);
           for (const [ax, ay] of [[-0.8, -0.3], [0.3, 0.2], [0.9, -0.45]]) ellipse(ctx, ax, ay, 0.22, 0.14, '#f1ead2');
-        } else if (['factory', 'railway', 'hospital', 'powerplant', 'datacenter', 'reactor', 'silo'].includes(kind)) {
+        } else if (['factory', 'railway', 'hospital', 'powerplant', 'datacenter', 'reactor', 'silo', 'airport', 'dock'].includes(kind)) {
           this.drawModern(ctx, kind, modern, time, slot);
         } else if (kind === 'farm') {
           ctx.fillStyle = '#b7ab72'; ctx.fillRect(-1.5, -0.95, 3, 1.9);
@@ -894,6 +941,19 @@ export class WorldView {
       ctx.fillStyle = '#b9b8b0'; ctx.fillRect(0.9, -1.2, 0.35, 1.7);
       ctx.fillStyle = '#e4c24a'; ctx.beginPath(); ctx.arc(0, -0.35, 0.16, 0, TAU); ctx.fill();
       if (modern.powered) this.drawSmoke(ctx, 1.07, -1.3, time, 'rgba(244,244,240,', 0.9, seed);
+    } else if (kind === 'airport') {
+      ctx.fillStyle = '#8f9196'; ctx.save(); ctx.rotate(-0.35); ctx.fillRect(-1.6, -0.12, 3.2, 0.24);
+      ctx.strokeStyle = '#f1f1ea'; ctx.lineWidth = 0.04; ctx.setLineDash([0.2, 0.15]); ctx.beginPath(); ctx.moveTo(-1.5, 0); ctx.lineTo(1.5, 0); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+      ctx.fillStyle = '#c9ced3'; ctx.fillRect(-0.5, 0.2, 1, 0.4);
+      ctx.fillStyle = '#6f93a8'; ctx.fillRect(-0.45, 0.25, 0.9, 0.12);
+      ctx.fillStyle = '#b8bcc0'; ctx.fillRect(0.55, -0.4, 0.14, 0.9); ctx.fillStyle = '#9ef0a0'; ctx.fillRect(0.53, -0.48, 0.18, 0.1);
+    } else if (kind === 'dock') {
+      // A port: quay, cranes and a moored ship.
+      ctx.fillStyle = '#9d8a6a'; ctx.fillRect(-1.2, 0.1, 2.4, 0.3);
+      ctx.fillStyle = '#7b6a55'; for (let pile = -1.1; pile < 1.2; pile += 0.4) ctx.fillRect(pile, 0.4, 0.06, 0.2);
+      ctx.strokeStyle = '#5c5856'; ctx.lineWidth = 0.07; ctx.beginPath(); ctx.moveTo(-0.7, 0.1); ctx.lineTo(-0.7, -0.9); ctx.lineTo(-0.2, -0.7); ctx.stroke();
+      ctx.fillStyle = '#6b5846'; ctx.beginPath(); ctx.moveTo(0.1, 0.55); ctx.lineTo(1.2, 0.55); ctx.lineTo(1.05, 0.75); ctx.lineTo(0.2, 0.75); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#f1ead2'; ctx.beginPath(); ctx.moveTo(0.6, 0.52); ctx.lineTo(0.6, -0.1); ctx.lineTo(0.95, 0.5); ctx.closePath(); ctx.fill();
     } else if (kind === 'silo') {
       ellipse(ctx, 0, 0.1, 0.95, 0.5, '#9a9a88');
       ellipse(ctx, 0, 0.05, 0.55, 0.3, '#5e5e56');
@@ -1022,6 +1082,7 @@ export class WorldView {
 
   drawAgent(ctx, agent, position, time) {
     const x = position.x, y = position.y;
+    if (agent.afloat) { this.drawVessel(ctx, agent, x, y, time); return; }
     const moving = Math.abs(agent.x - x) + Math.abs(agent.y - y) > 0.07;
     const bob = moving ? Math.sin(time * 0.015 + agent.id) * 0.025 : 0;
     const child = agent.age < 16;

@@ -33,7 +33,7 @@ export const TECHNOLOGIES = Object.freeze([
   { id: 'engineering', name: 'Engineering', requires: ['metallurgy', 'writing', 'irrigation'], cost: 420, materials: { metal: 2 }, description: 'Combine mechanical knowledge, irrigation, and written designs to improve industrial output.' },
   { id: 'astronomy', name: 'Astronomy', requires: ['writing', 'cultivation'], cost: 300, materials: { gems: 1 }, description: 'Observatories keep a calendar of seasons: better-timed harvests that weather droughts.' },
   { id: 'governance', name: 'Governance', requires: ['writing', 'masonry'], cost: 340, materials: { bricks: 2, cloth: 1 }, description: 'Halls, laws and councils: large societies stay cohesive and can organize colonies.' },
-  { id: 'navigation', name: 'Navigation', requires: ['fishing', 'engineering'], cost: 420, materials: { cloth: 3, wood: 4 }, description: 'Sails and docks: richer fishing grounds and far longer trade routes.' },
+  { id: 'navigation', name: 'Navigation', requires: ['fishing', 'engineering'], cost: 420, materials: { cloth: 3, wood: 4 }, description: 'Sails and ports: ships cross the open sea to islands and distant coasts, with richer fishing and far longer trade routes.' },
   // Industrial and modern eras. Each depends on finite coal or uranium and changes
   // how the society that holds it works, lives, divides its wealth and fights.
   { id: 'chemistry', name: 'Chemistry', era: 'Industrial', requires: ['philosophy', 'metallurgy'], cost: 480, materials: { herbs: 2, ore: 2, clay: 1 }, description: 'The systematic study of substances: fertilisers raise harvests by a quarter and remedies grow stronger.' },
@@ -41,6 +41,7 @@ export const TECHNOLOGIES = Object.freeze([
   { id: 'railways', name: 'Railways', era: 'Industrial', requires: ['steam', 'governance'], cost: 620, materials: { metal: 6, coal: 3, wood: 4 }, description: 'Iron roads carry goods and people far and fast: trade ranges grow by half and traders travel more often.' },
   { id: 'vaccination', name: 'Germ theory & vaccines', era: 'Industrial', requires: ['medicine', 'chemistry'], cost: 560, materials: { remedies: 3, metal: 1 }, description: 'Hospitals and vaccination: far fewer children die, and epidemics lose their grip.' },
   { id: 'electricity', name: 'Electricity', era: 'Modern', requires: ['steam', 'chemistry'], cost: 700, materials: { metal: 4, coal: 2 }, description: 'Power stations light and drive the whole settlement: a third more output from every workshop, and power for electronics.' },
+  { id: 'aviation', name: 'Aviation', era: 'Modern', requires: ['electricity', 'engineering'], cost: 850, materials: { metal: 4, electronics: 1, coal: 2 }, description: 'Engines light enough to fly: airports join distant lands, and people and goods cross oceans in a day.' },
   { id: 'computing', name: 'Computers', era: 'Modern', requires: ['electricity', 'philosophy'], cost: 900, materials: { electronics: 3 }, description: 'Powered computer centres calculate, store and connect: research runs 60% faster and knowledge is never lost.' },
   { id: 'fission', name: 'Nuclear fission', era: 'Atomic', requires: ['electricity', 'computing'], cost: 1100, materials: { uranium: 2, electronics: 2 }, description: 'Reactors draw enormous clean power from a little uranium, with a small risk of catastrophic accident.' },
   { id: 'nuclear-weapons', name: 'Nuclear weapons', era: 'Atomic', requires: ['fission', 'governance'], cost: 1000, materials: { uranium: 3, electronics: 2, metal: 4 }, description: 'Missile silos hold warheads that deter attack, or annihilate a city and poison its land.' },
@@ -64,7 +65,7 @@ export const BUILDINGS = Object.freeze({
   walls: { name: 'Walls', technology: 'masonry', cost: { stone: 8, bricks: 4 } },
   observatory: { name: 'Observatory', technology: 'astronomy', cost: { stone: 4, bricks: 3, gems: 1 } },
   hall: { name: 'Hall', technology: 'governance', cost: { wood: 4, bricks: 6, cloth: 2 } },
-  dock: { name: 'Dock', technology: 'navigation', cost: { wood: 6, cloth: 3 } },
+  dock: { name: 'Port', technology: 'navigation', cost: { wood: 6, cloth: 3 } },
   factory: { name: 'Factory', technology: 'steam', cost: { wood: 3, bricks: 6, metal: 4, coal: 2 } },
   railway: { name: 'Railway', technology: 'railways', cost: { wood: 6, metal: 6, coal: 2 } },
   hospital: { name: 'Hospital', technology: 'vaccination', cost: { bricks: 5, metal: 2, remedies: 2 } },
@@ -72,6 +73,7 @@ export const BUILDINGS = Object.freeze({
   datacenter: { name: 'Computer centre', technology: 'computing', cost: { bricks: 4, metal: 3, electronics: 4 } },
   reactor: { name: 'Nuclear reactor', technology: 'fission', cost: { bricks: 8, metal: 8, electronics: 3, uranium: 2 } },
   silo: { name: 'Missile silo', technology: 'nuclear-weapons', cost: { bricks: 6, metal: 8, electronics: 3 } },
+  airport: { name: 'Airport', technology: 'aviation', cost: { bricks: 6, metal: 6, electronics: 2 } },
 });
 // How each raw material is gathered: the action, the skill it trains, and what it looks like.
 const GATHERING = {
@@ -308,6 +310,7 @@ function chooseProject(sim, group) {
     if (tech.id === 'railways') score += civ.tradePartners.length * 3 + near.coal * 10 + (norms?.mercantile || 0) * 6;
     if (tech.id === 'vaccination') score += people.filter(agent => agent.age < 5).length * 1.5 + (civ.outbreakUntil > sim.day ? 14 : 0);
     if (tech.id === 'electricity') score += (civ.buildings.factory || 0) * 5;
+    if (tech.id === 'aviation') score += civ.tradePartners.length * 2 + (norms?.expansion || 0) * 8;
     if (tech.id === 'computing') score += mean('curiosity') * 8 + (norms?.innovation || 0) * 10;
     if (tech.id === 'fission') score += near.uranium * 60 + (civ.stock.coal < 2 && civ.buildings.powerplant ? 8 : 0);
     if (tech.id === 'nuclear-weapons') {
@@ -345,11 +348,12 @@ function desiredBuilding(sim, group) {
     ['clinic', plague ? 101 : 89, 1], ['apothecary', plague ? 100 : 88, 1],
     ['market', 80 + (norms.mercantile || 0) * 12, 1 + (tier >= 2 ? 1 : 0)], ['library', 78 + (norms.innovation || 0) * 12, 1],
     ['temple', 76 + (norms.piety || 0) * 14, 1 + (tier >= 3 ? 1 : 0)], ['walls', atWar ? 98 : 70 + (norms.martial || 0) * 18, 1],
-    ['hall', people > 30 ? 95 : 74 + (norms.hierarchy || 0) * 10, 1], ['observatory', 72, 1], ['dock', near.fish > .05 ? 75 : 0, near.fish > .05 ? 1 : 0],
+    ['hall', people > 30 ? 95 : 74 + (norms.hierarchy || 0) * 10, 1], ['observatory', 72, 1], ['dock', near.fish > .03 ? 93 : 0, near.fish > .03 ? 1 : 0],
     ['factory', 87, Math.max(1, Math.ceil(people / 40))], ['hospital', plague || civ.outbreakUntil > sim.day ? 102 : 90, 1 + (people > 60 ? 1 : 0)],
     ['powerplant', civ.buildings.reactor ? 0 : 86, civ.buildings.reactor ? 0 : 1], ['railway', (civ.buildings.factory ? 88 : 79) + (norms.mercantile || 0) * 8, 1],
     ['datacenter', 83 + (norms.innovation || 0) * 8, 1], ['reactor', 84 + (civ.stock.coal < 2 ? 10 : 0), 1],
     ['silo', atWar ? 97 : 55 + (norms.martial || 0) * 30 - (norms.collectivism || 0) * 10, 1],
+    ['airport', 80 + (norms.mercantile || 0) * 8 + (norms.expansion || 0) * 6, 1],
   ];
   // A demonstration waiting on a processed good makes the building that produces it urgent.
   const urgent = new Set(Object.keys(awaitedMaterials(group)).map(key => PRODUCER[key]).filter(Boolean));
@@ -670,7 +674,9 @@ export function considerCivilization(sim, agent, group) {
   const drive = Math.max(agent.psyche?.expansion ?? 0, agent.traits.curiosity * .7 + mind.needs.stimulation / 100 * .3);
   if (agent.age >= 16 && agent.age < 55 && drive > .35) add('pioneer', 6 + drive * 30 + (civ.culture?.pressure || 0) * 20, 'Scout distant land where our people could settle.', ['Travel beyond our lands', 'Remember good sites', 'Report back'], null);
   const neighbors = sim._neighbors(agent, 7);
-  const student = neighbors.find(other => other.age >= 5 && (agent.knowledge.some(id => !other.knowledge.includes(id)) || (agent.ideas || []).some(id => !knowsIdea(other, id)) || SKILLS.some(skill => agent.skills[skill] - other.skills[skill] > 15)));
+  // Someone who knows fewer ideas must lack at least one; only equals need a full comparison.
+  const lacksIdea = other => (agent.ideas || []).length > (other.ideas || []).length || (agent.ideas || []).some(id => !knowsIdea(other, id));
+  const student = neighbors.find(other => other.age >= 5 && (agent.knowledge.some(id => !other.knowledge.includes(id)) || lacksIdea(other) || SKILLS.some(skill => agent.skills[skill] - other.skills[skill] > 15)));
   if (student) add('teach', 26 + mind.values.care * 18 + agent.traits.sociability * 10 + mind.needs.purpose * .15, `Help ${student.name} learn a useful skill.`, ['Find a willing learner', 'Share an idea', 'Practice together'], student.id);
   if (civ.buildings.school && (civ.technologies.some(id => !agent.knowledge.includes(id)) || agent.skills.scholarship < 30)) add('study', 30 + mind.values.mastery * 16 + mind.needs.stimulation * .18, 'Study the community’s accumulated knowledge.', ['Visit the school', 'Study a shared technique', 'Practice it']);
   const patient = civ.technologies.includes('medicine') ? neighbors.filter(other => other.health < 80).sort((a, b) => a.health - b.health)[0] : null;
@@ -1123,10 +1129,11 @@ export function advanceCivilization(sim) {
     civ.stock.tools = Math.max(0, civ.stock.tools - group.members.length * .0009);
     civ.stock.goods *= .9998;
     // Households use up pottery, cloth and tools; industrial and information economies consume far more.
-    const standard = civ.buildings.datacenter ? 3 : civ.buildings.factory ? 2.5 : 1, n = group.members.length;
-    civ.stock.goods = Math.max(0, civ.stock.goods - n * .004 * standard);
-    civ.stock.cloth = Math.max(0, civ.stock.cloth - n * .002 * standard);
-    civ.stock.tools = Math.max(0, civ.stock.tools - n * .0006 * (standard - 1));
+    // Only surplus above a working reserve is used up, so building stock can accumulate.
+    const standard = civ.buildings.datacenter ? 3 : civ.buildings.factory ? 2.5 : 1, n = group.members.length, reserve = 4 + n * .05;
+    const consume = (key, rate) => { civ.stock[key] -= Math.min(Math.max(0, civ.stock[key] - reserve), n * rate * standard); };
+    consume('goods', .0015); consume('cloth', .0008);
+    if (standard > 1) consume('tools', .0004);
     civ.stock.hides *= .9985; civ.stock.herbs *= .999; civ.stock.remedies *= .9995;
     civ.stock.machines *= .9992; civ.stock.electronics *= .9996;
     // Power stations burn coal every day; a fuelled reactor replaces them and burns a little uranium.
@@ -1304,7 +1311,8 @@ export function restoreSociety(rawGroup, sim) {
   }
   // Saves before version 7 lack the newer materials and buildings; they start at zero.
   const legacy = (sim._restoreVersion || 7) < 7;
-  const fill = (value, keys) => legacy ? { ...blank(keys), ...object(value, 'society record') } : value;
+  // Records written before a building or material existed simply lack it; it starts at zero.
+  const fill = (value, keys) => ({ ...blank(keys), ...object(value, 'society record') });
   const buildings = numbers(fill(raw.buildings, Object.keys(BUILDINGS)), Object.keys(BUILDINGS), 'buildings', Number.MAX_SAFE_INTEGER);
   for (const [id, count] of Object.entries(buildings)) if (!Number.isInteger(count) || (count && !known.includes(BUILDINGS[id].technology))) invalid('building prerequisite or count');
   const workforce = {};

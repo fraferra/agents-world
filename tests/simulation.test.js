@@ -17,7 +17,8 @@ function assertHealthyState(sim) {
       assert.ok(Number.isFinite(agent[key]) && agent[key] >= 0 && agent[key] <= 100, `${key} for ${agent.id}`);
     }
     assert.ok(agent.x >= 0 && agent.x < state.width && agent.y >= 0 && agent.y < state.height);
-    assert.notEqual(state.tiles[Math.floor(agent.y) * state.width + Math.floor(agent.x)].terrain, 'water');
+    // Only people aboard a boat may be on the water.
+    if (!agent.afloat) assert.notEqual(state.tiles[Math.floor(agent.y) * state.width + Math.floor(agent.x)].terrain, 'water');
     if (agent.partnerId !== null) {
       const partner = state.agents.find((other) => other.id === agent.partnerId);
       assert.ok(partner);
@@ -41,8 +42,8 @@ function assertHealthyState(sim) {
 
 test('seeded world is repeatable, traversable, and meaningfully different across seeds', () => {
   assert.equal(DAYS_PER_YEAR, 120);
-  assert.equal(DEFAULT_CONFIG.population, 120);
-  assert.equal(DEFAULT_CONFIG.size, 'large');
+  assert.equal(DEFAULT_CONFIG.population, 150);
+  assert.equal(DEFAULT_CONFIG.size, 'vast');
   const first = new Simulation({ seed: 'test-island', size: 'standard' });
   const same = new Simulation({ seed: 'test-island', size: 'standard' });
   const different = new Simulation({ seed: 'another-island', size: 'standard' });

@@ -14,7 +14,7 @@ Options:
   --years N        Additional years to simulate, 1–100000 (default: 100)
   --seed TEXT      New-world seed, 1–128 characters (default: moss-17)
   --population N   Starting population, nonnegative integer (default: ${DEFAULT_CONFIG.population})
-  --size NAME      New-world size: compact, standard, large, vast, or immense (default: ${DEFAULT_CONFIG.size})
+  --size NAME      New-world size: compact, standard, large, vast, immense, huge, or colossal (default: ${DEFAULT_CONFIG.size})
   --load PATH      Continue an exported world or a raw simulation state
   --save PATH      Save a browser-compatible world every 30 seconds and on exit
   --report PATH    Write final statistics as JSON

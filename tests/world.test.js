@@ -11,7 +11,7 @@ import { PERSONALITY } from '../src/psyche.js';
 
 function society(options = {}) {
   const sim = new Simulation({ seed: options.seed || 'material-world', population: options.population || 8, size: 'compact' });
-  const center = sim._landNear(25.5, 30.5);
+  const center = sim._mainlandNear(48, 32);
   const group = initializeSociety({ id: sim.nextGroupId++, name: 'Test Commons', color: '#809260', ...center, members: sim.agents.map(agent => agent.id), food: 50, wood: 10, shelters: 3, culture: 'Stewardship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
   initializeGroupIdeas(group);
   sim.groups = [group]; sim._groupMap.set(group.id, group);
@@ -19,7 +19,7 @@ function society(options = {}) {
     Object.assign(agent, center, { groupId: group.id, hunger: 0, energy: 95, health: 100, social: 100, age: 30, _ageDays: 3600 });
     agent.inventory.food = 5;
     agent.mind.values = { security: 0, belonging: 0, autonomy: 0, mastery: 0, care: 0 };
-    agent.mind.ambition = 0; agent.mind.needs.stimulation = 0; agent.traits.curiosity = 0;
+    agent.mind.ambition = 0; agent.mind.needs.stimulation = 0; agent.mind.needs.purpose = 0; agent.traits.curiosity = 0; agent.traits.sociability = 0;
     agent.skills = Object.fromEntries(SKILLS.map(skill => [skill, 0]));
     Object.assign(agent.psyche, { personality: Object.fromEntries(PERSONALITY.map(key => [key, .5])), talents: Object.fromEntries(SKILLS.map(skill => [skill, 1])), preferences: {}, expectations: {}, techniques: [], episodes: [], places: [], reasoning: [], practice: {}, expansion: .3 });
   }

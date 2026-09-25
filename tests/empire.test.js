@@ -18,8 +18,8 @@ function war(big, small) {
     initializeCulture(sim, group);
     return group;
   };
-  const strong = make('Iron Hold', sim._landNear(20.5, 30.5), sim.agents.slice(0, big));
-  const weak = make('Reed Camp', sim._landNear(30.5, 30.5), sim.agents.slice(big));
+  const strong = make('Iron Hold', sim._mainlandNear(43, 32), sim.agents.slice(0, big));
+  const weak = make('Reed Camp', sim._mainlandNear(53, 32), sim.agents.slice(big));
   sim.diplomacy.relations.push({ a: strong.id, b: weak.id, trust: -.5, tension: 90, status: 'war', since: 0, lastContact: 0, warDays: 40, casualties: 0, tradeTotal: 0, reason: 'Test war.' });
   sim.day = 36;
   sim._buildSpatial();

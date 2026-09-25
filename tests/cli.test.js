@@ -16,7 +16,7 @@ test('rejects ambiguous, out-of-range, and destructive CLI option combinations',
   for (const args of [
     ['--years', '0'], ['--years', 'Infinity'], ['--years', '100001'],
     ['--population', '-1'], ['--population', '9007199254740992'], ['--population', '1.5'], ['--years', '1.5'],
-    ['--size', 'huge'], ['--size'], ['--size', 'standard', '--size', 'large'],
+    ['--size', 'gigantic'], ['--size'], ['--size', 'standard', '--size', 'large'],
     ['--save'], ['--what', 'yes'], ['--seed', ''],
     ['--load', 'world.json', '--seed', 'replacement'],
     ['--load', 'world.json', '--population', '32'],
@@ -25,9 +25,9 @@ test('rejects ambiguous, out-of-range, and destructive CLI option combinations',
     ['--load', 'world.json', '--report', './world.json'],
     ['--years', '2', '--years', '3'],
   ]) assert.throws(() => parseOptions(args), args.join(' '));
-  assert.deepEqual(parseOptions([]), { years: 100, population: 120, seed: 'moss-17', size: 'large' });
-  assert.deepEqual(parseOptions(['--years=2', '--population', '64', '--seed', 'test-world']), { years: 2, population: 64, seed: 'test-world', size: 'large' });
-  for (const size of ['compact', 'standard', 'large', 'vast', 'immense']) assert.equal(parseOptions([`--size=${size}`]).size, size);
+  assert.deepEqual(parseOptions([]), { years: 100, population: 150, seed: 'moss-17', size: 'vast' });
+  assert.deepEqual(parseOptions(['--years=2', '--population', '64', '--seed', 'test-world']), { years: 2, population: 64, seed: 'test-world', size: 'vast' });
+  for (const size of ['compact', 'standard', 'large', 'vast', 'immense', 'huge', 'colossal']) assert.equal(parseOptions([`--size=${size}`]).size, size);
   for (const population of ['0', '1', '2', '600', '1001', '12000']) assert.equal(parseOptions(['--population', population]).population, Number(population));
 });
 

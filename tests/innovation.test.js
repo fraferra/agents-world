@@ -7,7 +7,7 @@ import { initializeInnovation, initializeAgentIdeas, initializeGroupIdeas, attem
 function laboratory(seed = 'open-laboratory') {
   const sim = new Simulation({ seed, population: 6, size: 'compact' });
   initializeInnovation(sim);
-  const center = sim._landNear(25, 30);
+  const center = sim._mainlandNear(48, 32);
   const group = initializeGroupIdeas(initializeSociety({ id: sim.nextGroupId++, name: 'Laboratory Commons', color: '#809260', ...center, members: sim.agents.map(agent => agent.id), food: 100, wood: 100, shelters: 3, culture: 'Stewardship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 }));
   group.civilization.stock.stone = group.civilization.stock.ore = 100;
   sim.groups = [group]; sim._groupMap = new Map([[group.id, group]]);

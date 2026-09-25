@@ -5,7 +5,7 @@ import { shareCustom } from './culture.js';
 import { claimFriction } from './expansion.js';
 import { startOutbreak, industry, contaminate } from './civilization.js';
 import { addWealth } from './economy.js';
-import { linkBetween } from './infrastructure.js';
+import { linkBetween, reachable } from './infrastructure.js';
 
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -47,8 +47,9 @@ export function tradeAccess(sim, a, b) {
   const r = relation(sim, a, b);
   if (r?.status === 'war') return false;
   const ea = innovationEffects(sim, a), eb = innovationEffects(sim, b);
-  // Roads and railways carry traders along their whole length.
+  // Roads, railways, sea and air routes carry traders along their whole length.
   if (linkBetween(sim, a, b)) return !r || r.tension < 78 || r.status === 'alliance';
+  if (!reachable(sim, a, b)) return false;
   // Logistics (and docks) extend the range in which an actual trader can seek exchange.
   return distance(a, b) <= 22 * Math.sqrt(ea.trade * eb.trade) * (a.civilization?.buildings.dock || b.civilization?.buildings.dock ? 1.35 : 1) * Math.max(industry(a).reach, industry(b).reach)
     && (!r || r.tension < 78 || r.status === 'alliance');
@@ -312,7 +313,7 @@ export function advanceDiplomacy(sim) {
     for (let i = 0; i < sim.groups.length; i++) for (let j = i + 1; j < sim.groups.length; j++) {
       const a = sim.groups[i], b = sim.groups[j];
       const range = 25 * Math.sqrt(innovationEffects(sim, a).trade * innovationEffects(sim, b).trade) * Math.max(industry(a).reach, industry(b).reach);
-      if (distance(a, b) <= range) relation(sim, a, b, true).lastContact = sim.day;
+      if (distance(a, b) <= range && reachable(sim, a, b)) relation(sim, a, b, true).lastContact = sim.day;
     }
   }
   const situations = new Map(), effects = new Map();
@@ -325,7 +326,7 @@ export function advanceDiplomacy(sim) {
     const a = sim._groupMap.get(r.a), b = sim._groupMap.get(r.b);
     if (!a || !b) continue;
     const [ea, sa] = describe(a), [eb, sb] = describe(b);
-    const contact = !!linkBetween(sim, a, b) || distance(a, b) <= 25 * Math.sqrt(ea.trade * eb.trade) * Math.max(industry(a).reach, industry(b).reach);
+    const contact = !!linkBetween(sim, a, b) || (distance(a, b) <= 25 * Math.sqrt(ea.trade * eb.trade) * Math.max(industry(a).reach, industry(b).reach) && reachable(sim, a, b));
     if (r.status === 'war') {
       r.warDays++;
       if (contact && sim.day % 6 === 0) {

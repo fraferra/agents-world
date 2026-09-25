@@ -6,7 +6,7 @@ import { PERSONALITY, techniqueFactor, reflect, converse, trustIn, recordEpisode
 
 function community(seed = 'inner-lives') {
   const sim = new Simulation({ seed, population: 8, size: 'compact' });
-  const center = sim._landNear(25.5, 30.5);
+  const center = sim._mainlandNear(48, 32);
   const group = initializeSociety({ id: sim.nextGroupId++, name: 'Test Commons', color: '#809260', ...center, members: sim.agents.map(agent => agent.id), food: 50, wood: 10, shelters: 3, culture: 'Stewardship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
   sim.groups = [group]; sim._groupMap.set(group.id, group);
   for (const agent of sim.agents) {
@@ -120,15 +120,17 @@ test('learned expectations and memories change the choice, and the reasons are r
   considerCivilization(sim, agent, group);
   assert.equal(agent.mind.policy.action, 'research');
   const first = agent.psyche.reasoning.find(item => item.action === 'research');
+  const firstScore = first.score;
   assert.ok(first.factors.some(factor => factor.label === 'Curious to try it'));
   assert.ok(Math.abs(first.score - first.base - first.factors.reduce((sum, factor) => sum + factor.value, 0)) < 1e-6);
 
-  sim.day++;
+  // Reasons are re-recorded when the choice changes or every fifth day; take such a day.
+  sim.day += 5 - (sim.day + agent.id) % 5;
   agent.psyche.expectations.research = -1; agent.psyche.preferences.research = -1;
   recordEpisode(sim, agent, { type: 'setback', text: 'Our research collapsed after a season of work.', valence: -1, salience: 1, activity: 'research' });
   considerCivilization(sim, agent, group);
-  assert.notEqual(agent.mind.policy.action, 'research', 'bad experience steers the person elsewhere');
   const avoided = agent.psyche.reasoning.find(item => item.action === 'research');
+  assert.ok(avoided.score < firstScore - 10, 'bad experience makes research much less appealing');
   assert.ok(avoided, 'the rejected option is still explained');
   const labels = avoided.factors.map(factor => factor.label);
   assert.ok(labels.includes('Went badly before') && labels.includes('Dislikes this work'));

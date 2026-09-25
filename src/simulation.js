@@ -12,27 +12,29 @@ import { TILE_RESOURCES, DEPOSITS, shoreMask, generateResources, generateDeposit
 import { initializeGlobalCulture, initializeCulture, advanceCulture, cultureLabel, customModifiers, restoreGlobalCulture, restoreCulture } from './culture.js';
 import { considerExpansion, considerFission } from './expansion.js';
 import { establishKinship } from './diplomacy.js';
-import { initializeInfrastructure, advanceInfrastructure, infrastructureStats, restoreInfrastructure, linkBetween } from './infrastructure.js';
+import { initializeInfrastructure, advanceInfrastructure, infrastructureStats, restoreInfrastructure, linkBetween, seafaring, reachable } from './infrastructure.js';
 import { performAct, endureConditions, activeConditions, PLAGUE_DAYS, WINTER_DAYS } from './acts.js';
 import { initializeGlobalPsyche, initializePsyche, restoreGlobalPsyche, restorePsyche, restoreRelationExtras, psycheStats, moodBalance, appraise, acquaint, appreciate, techniqueFactor, rememberPlace, recallPlace, revisitPlace, recordEpisode } from './psyche.js';
 
 export const DAYS_PER_YEAR = 120;
 export const DEFAULT_CONFIG = Object.freeze({
-  seed: 'moss-17', size: 'large', population: 120, abundance: 1, cooperation: 1, fertility: 1,
+  seed: 'moss-17', size: 'vast', population: 150, abundance: 1, cooperation: 1, fertility: 1,
 });
 
 export const WORLD_SIZES = Object.freeze({
   compact: Object.freeze({ width: 96, height: 64 }), standard: Object.freeze({ width: 160, height: 104 }), large: Object.freeze({ width: 224, height: 144 }),
   vast: Object.freeze({ width: 320, height: 208 }), immense: Object.freeze({ width: 400, height: 260 }),
+  huge: Object.freeze({ width: 512, height: 336 }), colossal: Object.freeze({ width: 640, height: 416 }),
 });
-const REGION_GRID = { compact: [4, 3], standard: [4, 3], large: [4, 3], vast: [5, 4], immense: [6, 5] };
+const REGION_GRID = { compact: [4, 3], standard: [4, 3], large: [4, 3], vast: [5, 4], immense: [6, 5], huge: [7, 5], colossal: [8, 6] };
 const HISTORY_LIMIT = 720, EVENT_LIMIT = 120;
 export const TERRAIN = ['water', 'grass', 'forest', 'sand', 'mountain'];
 // Tile fields that change as the world is used; terrain, elevation and fertility never do.
 export const TILE_FIELDS = Object.freeze(['food', 'wood', 'soil', 'stone', 'ore', ...TILE_RESOURCES, ...DEPOSITS, 'worked']);
 const COLORS = ['#df985f', '#6dbea0', '#b29bd6', '#e0bd60', '#7da9d3', '#d8869c', '#a4ba72', '#88c7ca'];
 const FIRST_NAMES = ['Ari', 'Mira', 'Kai', 'Sora', 'Lena', 'Noor', 'Emi', 'Rowan', 'Asa', 'Iris', 'Leo', 'Wren', 'Ivo', 'Nia', 'Theo', 'Zuri', 'Sage', 'Ada', 'Remy', 'Ravi', 'June', 'Eden', 'Oren', 'Alba', 'Jin', 'Isla', 'Finn', 'Yara', 'Paz', 'Elio', 'Lumi', 'Tala'];
-const MORE_REGION_NAMES = ['Alder', 'Amber', 'Willow', 'Silver', 'Moss', 'Copper', 'Juniper', 'Wind', 'Sun', 'Fern', 'Ash', 'Blue', 'Heron', 'Cedar', 'Ember', 'Frost', 'Hazel', 'Iron', 'Lark', 'Marsh', 'Oak', 'Pine', 'Quill', 'Raven', 'Sable', 'Thistle', 'Umber', 'Violet', 'Wren', 'Yarrow'];
+const MORE_REGION_NAMES = ['Alder', 'Amber', 'Willow', 'Silver', 'Moss', 'Copper', 'Juniper', 'Wind', 'Sun', 'Fern', 'Ash', 'Blue', 'Heron', 'Cedar', 'Ember', 'Frost', 'Hazel', 'Iron', 'Lark', 'Marsh', 'Oak', 'Pine', 'Quill', 'Raven', 'Sable', 'Thistle', 'Umber', 'Violet', 'Wren', 'Yarrow',
+  'Aster', 'Bramble', 'Coral', 'Dusk', 'Elder', 'Flint', 'Gale', 'Harrow', 'Ivy', 'Jasper', 'Kestrel', 'Linden', 'Myrtle', 'Nettle', 'Onyx', 'Plover', 'Rowan', 'Sorrel'];
 const LAST_NAMES = ['Moss', 'Reed', 'Ash', 'Vale', 'Brook', 'Fern', 'Lake', 'Alder', 'Stone', 'Willow', 'Briar', 'Clay', 'Wells', 'Birch', 'Dune', 'Holt'];
 const GROUP_WORDS = ['Hearth', 'Commons', 'Circle', 'Grove', 'Kin', 'Haven', 'Collective', 'Camp'];
 const clamp = (n, low = 0, high = 1) => Math.max(low, Math.min(high, n));
@@ -118,36 +120,120 @@ export class Simulation {
 
   _pick(array) { return array[Math.floor(this._random() * array.length)]; }
 
+  /**
+   * Terrain from the seed alone (the random generator only scatters starting food
+   * and timber). A large main continent of seed-dependent shape and tilt, warped
+   * coastlines, mountain spines, islands and archipelagos offshore, rivers that
+   * run downhill from the heights to the sea or end in lakes, and dry interiors.
+   */
   _makeWorld() {
-    const seed = hashSeed(this.seed), bend = lattice(5, 11, seed) * 5;
-    // Larger worlds are not just finer: terrain features repeat at the same
-    // physical scale, so there are more hills, woods, basins and rivers.
-    const feature = Math.max(1, this.width / 224);
-    const rivers = [{ base: 0.35, amp: 0.055, phase: bend, slope: 0.12 }];
-    for (let r = 1; r < 1 + Math.round(feature); r++) {
-      rivers.push({ base: r % 2 ? 0.14 + lattice(r, 3, seed) * 0.06 : 0.55 + lattice(r, 5, seed) * 0.06, amp: 0.04 + lattice(r, 7, seed) * 0.03, phase: lattice(r, 9, seed) * 6, slope: (lattice(r, 13, seed) - 0.5) * 0.2 });
+    const seed = hashSeed(this.seed), W = this.width, H = this.height, aspect = W / H;
+    const param = (i) => lattice(i, 991, seed);
+    const cx = 0.36 + param(1) * 0.28, cy = 0.38 + param(2) * 0.24;
+    const rx = 0.25 + param(3) * 0.09, ry = (0.27 + param(4) * 0.1) * aspect * 0.72, tilt = param(5) * Math.PI;
+    const scale = (value) => value * Math.min(W, 224) / 224;
+    // Offshore islands and island chains: more on larger maps, placed clear of the continent.
+    const islands = [];
+    const continentAt = (u, v) => {
+      const dx = u - cx, dy = (v - cy) / aspect;
+      const px = dx * Math.cos(tilt) + dy * Math.sin(tilt), py = -dx * Math.sin(tilt) + dy * Math.cos(tilt);
+      return 1 - Math.hypot(px / rx, py / (ry / aspect));
+    };
+    const wanted = Math.round(4 + param(6) * 4 + W * H / 14000);
+    for (let k = 0, attempt = 0; islands.length < wanted && attempt < wanted * 12; attempt++, k++) {
+      const u = 0.07 + lattice(k, 3, seed) * 0.86, v = 0.08 + lattice(k, 5, seed) * 0.84;
+      if (continentAt(u, v) > -0.25 || islands.some((island) => Math.hypot(island.u - u, (island.v - v) / aspect) < island.r + 0.05)) continue;
+      const r = 0.02 + lattice(k, 7, seed) ** 2 * 0.075;
+      islands.push({ u, v, r });
+      // Some islands trail an archipelago of smaller ones.
+      if (lattice(k, 9, seed) < 0.45) {
+        const heading = lattice(k, 11, seed) * Math.PI * 2, count = 2 + Math.floor(lattice(k, 13, seed) * 4);
+        for (let j = 1; j <= count; j++) {
+          const su = u + Math.cos(heading + j * 0.4) * (r + 0.025 * j), sv = v + Math.sin(heading + j * 0.4) * (r + 0.025 * j) * aspect;
+          if (su > 0.05 && su < 0.95 && sv > 0.05 && sv < 0.95 && continentAt(su, sv) < -0.15) islands.push({ u: su, v: sv, r: 0.008 + lattice(k * 7 + j, 17, seed) * 0.018 });
+        }
+      }
     }
-    for (let y = 0; y < this.height; y++) {
-      for (let x = 0; x < this.width; x++) {
-        const u = x / this.width, v = y / this.height;
-        const nx = u * 96 * feature, ny = v * 64 * feature;
-        const hills = noise(nx / 19, ny / 18, seed), detail = noise(nx / 5, ny / 5, seed + 41);
-        const continent = Math.max(0.72 - u * u * 0.82, 0.53 - (u - 0.91) ** 2 * 13 - (v - 0.63) ** 2 * 2.3);
-        const strait = Math.max(0, 0.045 - Math.abs(u - (0.745 + Math.sin(v * 6 + bend) * 0.018))) * 5;
-        const elevation = clamp(continent + (hills - 0.5) * 0.43 + (detail - 0.5) * 0.14 - strait);
-        let riverDistance = Infinity;
-        for (const river of rivers) riverDistance = Math.min(riverDistance, Math.abs(x - this.width * (river.base + Math.sin(v * 6 + river.phase) * river.amp + v * river.slope)));
-        const riverWidth = Math.max(0.8, this.width / 120);
-        const moisture = noise(nx / 10, ny / 11, seed + 89);
-        const terrain = elevation < 0.23 || riverDistance < riverWidth ? 'water'
-          : elevation < 0.28 || riverDistance < riverWidth + 0.8 ? 'sand'
-            : elevation > 0.75 ? 'mountain' : moisture > 0.49 ? 'forest' : 'grass';
+    const elevation = new Float32Array(W * H), moisture = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const u = x / W, v = y / H;
+        // Domain warping bends coastlines into bays, capes and peninsulas.
+        const wu = u + (noise(x / scale(40), y / scale(40), seed + 11) - 0.5) * 0.16, wv = v + (noise(x / scale(40) + 17, y / scale(40), seed + 13) - 0.5) * 0.16 * aspect;
+        const detail = noise(x / scale(14), y / scale(14), seed + 41) * 0.55 + noise(x / scale(6), y / scale(6), seed + 43) * 0.3 + noise(x / scale(2.5), y / scale(2.5), seed + 47) * 0.15;
+        let land = continentAt(wu, wv) * 1.1 + (detail - 0.5) * 0.7;
+        for (const island of islands) {
+          const d = Math.hypot(wu - island.u, (wv - island.v) / aspect);
+          if (d < island.r * 2.2) land = Math.max(land, (1 - d / island.r) * 0.8 + (detail - 0.5) * 0.5);
+        }
+        // Oceans ring the map.
+        const edge = Math.min(u, 1 - u, v, 1 - v);
+        if (edge < 0.05) land -= (0.05 - edge) * 14;
+        // Mountain spines follow ridged noise across high ground.
+        const ridge = 1 - Math.abs(noise(x / scale(30), y / scale(30), seed + 31) * 2 - 1);
+        const index = y * W + x;
+        elevation[index] = clamp(0.23 + land * 0.42 + Math.max(0, ridge - 0.72) * 1.6 * clamp(land * 2, 0, 1));
+        moisture[index] = noise(x / scale(26), y / scale(26), seed + 89) * 0.8 + noise(x / scale(8), y / scale(8), seed + 97) * 0.2;
+      }
+    }
+    // Rivers rise in the heights and run downhill to the sea, carving through small
+    // rises on the way; now and then a basin holds a lake.
+    const river = new Uint8Array(W * H), visited = new Int32Array(W * H).fill(-1);
+    const sources = Math.round(W * H / 2600);
+    for (let k = 0, found = 0, tries = 0; found < sources && tries < sources * 80; tries++, k++) {
+      let x = Math.floor(lattice(k, 101, seed) * W), y = Math.floor(lattice(k, 103, seed) * H);
+      if (elevation[y * W + x] < 0.58 || river[y * W + x]) continue;
+      found++;
+      for (let step = 0; step < W + H; step++) {
+        const here = y * W + x;
+        if (elevation[here] < 0.23) break;
+        if (river[here] && step > 0) break; // joined another river
+        river[here] = 1; visited[here] = k;
+        let next = -1, lowest = Infinity;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H || visited[ny * W + nx] === k) continue;
+          const height = elevation[ny * W + nx] + (lattice(nx, ny, seed + 107) - 0.5) * 0.01;
+          if (height < lowest) { lowest = height; next = ny * W + nx; }
+        }
+        if (next < 0) break;
+        if (elevation[next] >= elevation[here]) {
+          // A basin: sometimes it becomes a lake, otherwise the river cuts through.
+          if (lattice(x, y, seed + 113) < 0.08) {
+            for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (dx * dx + dy * dy <= 5 && x + dx >= 0 && y + dy >= 0 && x + dx < W && y + dy < H) elevation[(y + dy) * W + x + dx] = Math.min(elevation[(y + dy) * W + x + dx], 0.2);
+            break;
+          }
+          elevation[next] = Math.max(0.24, elevation[here] - 0.002);
+        }
+        x = next % W; y = Math.floor(next / W);
+      }
+    }
+    // Distance to the nearest river (up to 7), for fertile valleys.
+    const valley = new Uint8Array(W * H).fill(255), queue = [];
+    for (let i = 0; i < W * H; i++) if (river[i]) { valley[i] = 0; queue.push(i); }
+    for (let head = 0; head < queue.length; head++) {
+      const i = queue[head], d = valley[i];
+      if (d >= 7) continue;
+      const x = i % W, y = Math.floor(i / W);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H || valley[ny * W + nx] <= d + 1) continue;
+        valley[ny * W + nx] = d + 1; queue.push(ny * W + nx);
+      }
+    }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const index = y * W + x, height = elevation[index], wet = clamp(moisture[index] + (valley[index] < 7 ? (7 - valley[index]) * 0.03 : 0));
+        const terrain = height < 0.23 || river[index] ? 'water'
+          : height < 0.265 ? 'sand'
+            : height > 0.75 ? 'mountain'
+              : wet < 0.3 && height < 0.6 ? 'sand' : wet > 0.52 ? 'forest' : 'grass';
         const fertility = terrain === 'water' ? 0 : clamp((terrain === 'grass' ? 0.55 : terrain === 'forest' ? 0.43 : terrain === 'sand' ? 0.12 : 0.08)
-          + moisture * 0.28 + (riverDistance < 7 ? 0.18 : 0));
-        const minerals = noise(nx / 8, ny / 8, seed + 173);
-        const stone = terrain === 'water' ? 0 : clamp((terrain === 'mountain' ? 0.55 : 0.04) + elevation * minerals * 0.5);
-        const ore = terrain === 'water' ? 0 : clamp((terrain === 'mountain' ? 0.32 : 0.015) + Math.max(0, minerals - 0.5) * (0.7 + elevation));
-        this.tiles.push({ terrain, elevation, fertility, soil: fertility, stone, ore,
+          + wet * 0.28 + (valley[index] < 7 ? 0.18 : 0));
+        const minerals = noise(x / scale(9), y / scale(9), seed + 173);
+        const stone = terrain === 'water' ? 0 : clamp((terrain === 'mountain' ? 0.55 : 0.04) + height * minerals * 0.5);
+        const ore = terrain === 'water' ? 0 : clamp((terrain === 'mountain' ? 0.32 : 0.015) + Math.max(0, minerals - 0.5) * (0.7 + height));
+        this.tiles.push({ terrain, elevation: height, fertility, soil: fertility, stone, ore,
           food: foodCapacity(terrain) * (0.48 + this._random() * 0.52),
           wood: terrain === 'forest' ? 0.5 + this._random() * 0.5 : terrain === 'grass' ? this._random() * 0.12 : 0 });
       }
@@ -155,6 +241,72 @@ export class Simulation {
     this._makeRegions();
     const shore = shoreMask(this);
     for (let i = 0; i < this.tiles.length; i++) Object.assign(this.tiles[i], generateResources(this, i, shore[i]));
+  }
+
+  /**
+   * The vessel that can carry this person onto the water at (x, y), if any:
+   * their society's boats (canoes only in coastal waters), or, if already afloat
+   * without one, a slow row back to shore.
+   */
+  _voyage(agent, x, y) {
+    const vessel = seafaring(this._groupMap.get(agent.groupId));
+    if (vessel.kind && this._seaDepth(x, y) <= vessel.coastal) return vessel;
+    return agent._afloat ? { kind: 'raft', speed: 0.6 } : null;
+  }
+
+  /** How many tiles a water tile lies from the nearest land (0 on land). Derived, never saved. */
+  _seaDepth(x, y) {
+    const lands = this._landmasses();
+    if (!lands.depth) {
+      const W = this.width, H = this.height, depth = new Uint16Array(W * H).fill(65535), queue = [];
+      for (let i = 0; i < W * H; i++) if (this.tiles[i].terrain !== 'water') { depth[i] = 0; queue.push(i); }
+      for (let head = 0; head < queue.length; head++) {
+        const i = queue[head], px = i % W, py = Math.floor(i / W);
+        for (const [ddx, ddy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const qx = px + ddx, qy = py + ddy, n = qy * W + qx;
+          if (qx < 0 || qy < 0 || qx >= W || qy >= H || depth[n] <= depth[i] + 1) continue;
+          depth[n] = depth[i] + 1; queue.push(n);
+        }
+      }
+      lands.depth = depth;
+    }
+    return lands.depth[Math.floor(clamp(y, 0, this.height - 0.001)) * this.width + Math.floor(clamp(x, 0, this.width - 0.001))];
+  }
+
+  /** The nearest grassland or woodland on the main continent. */
+  _mainlandNear(x, y) {
+    const lands = this._landmasses();
+    let best = null, closest = Infinity;
+    for (let i = 0; i < lands.label.length; i++) {
+      if (lands.label[i] !== lands.mainland || (this.tiles[i].terrain !== 'grass' && this.tiles[i].terrain !== 'forest')) continue;
+      const px = i % this.width + 0.5, py = Math.floor(i / this.width) + 0.5, d = (px - x) ** 2 + (py - y) ** 2;
+      if (d < closest) { closest = d; best = { x: px, y: py }; }
+    }
+    return best || this._landNear(x, y);
+  }
+
+  /** Connected land masses, largest first: label per tile (-1 for water) and sizes. Derived, never saved. */
+  _landmasses() {
+    if (this._landCache?.tiles === this.tiles) return this._landCache;
+    const W = this.width, H = this.height, label = new Int32Array(W * H).fill(-1), sizes = [];
+    for (let start = 0; start < label.length; start++) {
+      if (label[start] !== -1 || this.tiles[start].terrain === 'water') continue;
+      const id = sizes.length, stack = [start];
+      label[start] = id; let size = 0;
+      while (stack.length) {
+        const i = stack.pop(); size++;
+        const x = i % W, y = Math.floor(i / W);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy, n = ny * W + nx;
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H || label[n] !== -1 || this.tiles[n].terrain === 'water') continue;
+          label[n] = id; stack.push(n);
+        }
+      }
+      sizes.push(size);
+    }
+    const mainland = sizes.indexOf(Math.max(...sizes, 0));
+    this._landCache = { tiles: this.tiles, label, sizes, mainland };
+    return this._landCache;
   }
 
   _makeRegions() {
@@ -170,7 +322,8 @@ export class Simulation {
       const point = this._landNear(x, y);
       if (this.regions.some((region) => distance2(region, point) < 100)) continue;
       const biome = this._tile(point.x, point.y).terrain;
-      const base = `${names[(col + row * cols + seed % names.length) % names.length]} ${suffix[biome]}`;
+      const lands = this._landmasses(), island = lands.label[Math.floor(point.y) * this.width + Math.floor(point.x)] !== lands.mainland;
+      const base = `${names[(col + row * cols + seed % names.length) % names.length]} ${island ? 'Isle' : suffix[biome]}`;
       const name = this.regions.some((region) => region.name === base) ? `${base} ${['East', 'West', 'North', 'South'][(col + row) % 4]}` : base;
       this.regions.push({ id: this.regions.length + 1, name, ...point, biome });
     }
@@ -178,9 +331,10 @@ export class Simulation {
 
   _populate() {
     // Loose starting clusters make encounters possible without assigning a society.
-    const fertile = [];
+    // The first people live on the main continent; islands wait for boats.
+    const fertile = [], lands = this._landmasses();
     for (let i = 0; i < this.tiles.length; i++) {
-      if (this.tiles[i].terrain === 'grass' || this.tiles[i].terrain === 'forest') fertile.push(i);
+      if ((this.tiles[i].terrain === 'grass' || this.tiles[i].terrain === 'forest') && lands.label[i] === lands.mainland) fertile.push(i);
     }
     const centers = [];
     for (let c = 0; c < Math.max(2, Math.ceil(this.config.population / 16)); c++) {
@@ -218,7 +372,7 @@ export class Simulation {
       action: age < 5 ? 'growing up' : 'exploring', generation: parents ? Math.max(parents[0].generation, parents[1].generation) + 1 : 1,
       _ageDays: ageDays, _lifespan: maximumLifespanDays(this._random()), sex: assignSex(this), attraction: assignAttraction(this), wealth: 0,
       _lastBirthDay: -1000, _bondDay: -1, _relations: [], _stress: 0, _homeDays: 0,
-      _wanderX: x, _wanderY: y, _courtship: null,
+      _wanderX: x, _wanderY: y, _courtship: null, _afloat: false,
     };
     initializeMind(this, agent, parents);
     initializeAgentIdeas(agent);
@@ -254,8 +408,16 @@ export class Simulation {
     const amount = Math.min(speed, distance);
     const nx = clamp(agent.x + dx / distance * amount, 0.15, this.width - 0.15);
     const ny = clamp(agent.y + dy / distance * amount, 0.15, this.height - 0.15);
-    if (this._tile(nx, ny).terrain !== 'water') { agent.x = nx; agent.y = ny; }
-    else {
+    if (this._tile(nx, ny).terrain !== 'water') { agent.x = nx; agent.y = ny; agent._afloat = false; }
+    else if (this._voyage(agent, nx, ny)) {
+      // Boats, ships and aircraft carry people across water, faster than walking.
+      const vessel = this._voyage(agent, nx, ny), step = Math.min(speed * vessel.speed, distance);
+      agent.x = clamp(agent.x + dx / distance * step, 0.15, this.width - 0.15);
+      agent.y = clamp(agent.y + dy / distance * step, 0.15, this.height - 0.15);
+      agent._afloat = this._tile(agent.x, agent.y).terrain === 'water';
+      agent.energy = clamp(agent.energy - step * 0.2, 0, 100);
+      return;
+    } else {
       // Walk the bank until a crossing is found. Narrow rivers may be forded;
       // ocean tiles are never valid destinations.
       const candidates = [
@@ -614,7 +776,7 @@ export class Simulation {
     const origin = home || agent, reach = 45 * (home ? industry(home).reach : 1);
     let best = null, bestScore = -Infinity;
     for (const band of this.groups) {
-      if (band === home || !(singles.get(band.id) || []).some((other) => this._eligibleMate(agent, other))) continue;
+      if (band === home || !(singles.get(band.id) || []).some((other) => this._eligibleMate(agent, other)) || (home ? !reachable(this, home, band) : !reachable(this, band, agent))) continue;
       // A road or railway brings a distant band within easy reach.
       const route = home ? linkBetween(this, home, band) : null;
       const distance = Math.sqrt(distance2(origin, band)) / (route ? (route.kind === 'rail' ? 3 : 2) : 1);
@@ -786,7 +948,7 @@ export class Simulation {
       if (band.members.length >= 5 || this.day - band._foundedDay < 360 || !this._groupMap.has(band.id)) continue;
       let best = null, bestScore = -Infinity;
       for (const other of this.groups) {
-        if (other === band || other.members.length <= band.members.length || atWar(this, band, other)) continue;
+        if (other === band || other.members.length <= band.members.length || atWar(this, band, other) || !reachable(this, band, other)) continue;
         const distance = Math.sqrt(distance2(band, other));
         if (distance > 40) continue;
         const r = relationBetween(this, band, other);
@@ -826,7 +988,7 @@ export class Simulation {
         if (this._random() > 0.03) continue;
         let best = null, bestScore = 0;
         for (const town of towns) {
-          if (town === band || atWar(this, band, town)) continue;
+          if (town === band || atWar(this, band, town) || !reachable(this, band, town)) continue;
           const route = linkBetween(this, band, town), distance = Math.sqrt(distance2(band, town));
           if (distance > (route ? 90 : 35)) continue;
           const industrial = town.civilization.buildings.factory || town.civilization.buildings.railway ? 1.4 : 1;
@@ -1086,7 +1248,7 @@ export class Simulation {
       agents: this.agents.map((agent) => {
         const { id, name, x, y, age, health, hunger, energy, social, happiness, groupId, partnerId, action, generation } = agent;
         return { id, name, x, y, age, health, hunger, energy, social, happiness, sex: agent.sex, attraction: agent.attraction, wealth: agent.wealth, traits: { ...agent.traits }, inventory: { ...agent.inventory },
-          groupId, partnerId, parentIds: [...agent.parentIds], children: [...agent.children], action, generation,
+          groupId, partnerId, parentIds: [...agent.parentIds], children: [...agent.children], action, generation, afloat: agent._afloat === true,
           mind: structuredClone(agent.mind), skills: { ...agent.skills }, knowledge: [...agent.knowledge], ideas: [...agent.ideas], convictions: { ...agent.convictions },
           psyche: structuredClone(agent.psyche), relations: agent._relations.map((relation) => ({ ...relation })) };
       }),
@@ -1115,7 +1277,7 @@ export class Simulation {
       agents: this.agents.map((agent) => {
         const { id, name, x, y, age, health, hunger, energy, social, happiness, groupId, partnerId, action, generation } = agent;
         const outward = { id, name, x, y, age, health, hunger, energy, social, happiness, sex: agent.sex, attraction: agent.attraction, wealth: agent.wealth, traits: { ...agent.traits }, inventory: { ...agent.inventory },
-          groupId, partnerId, parentIds: [...agent.parentIds], children: [...agent.children], action, generation, knowledge: [...agent.knowledge], convictions: { ...agent.convictions } };
+          groupId, partnerId, parentIds: [...agent.parentIds], children: [...agent.children], action, generation, afloat: agent._afloat === true, knowledge: [...agent.knowledge], convictions: { ...agent.convictions } };
         if (agent.id !== detailId) return { ...outward, lite: true, ideaCount: agent.ideas.length, mind: { role: agent.mind.role }, psyche: { thought: agent.psyche?.thought, expansion: agent.psyche?.expansion } };
         return { ...outward, ideas: [...agent.ideas], mind: structuredClone(agent.mind), skills: { ...agent.skills }, psyche: structuredClone(agent.psyche), relations: agent._relations.map((relation) => ({ ...relation })) };
       }),
@@ -1269,7 +1431,8 @@ function restore(raw) {
       }),
     };
     if (agent.x >= sim.width || agent.y >= sim.height || agent.age !== agent._ageDays / DAYS_PER_YEAR || agent._ageDays >= agent._lifespan || agent.health <= 0) fail('living agent');
-    if (sim._tile(agent.x, agent.y).terrain === 'water') fail('agent standing in water');
+    agent._afloat = a._afloat === true;
+    if (sim._tile(agent.x, agent.y).terrain === 'water' && !agent._afloat) fail('agent standing in water');
     if (agent.id >= sim.nextAgentId || agent.parentIds.some((value) => value >= agent.id) || agent.children.some((value) => value <= agent.id || value >= sim.nextAgentId)) fail('genealogy or agent sequence');
     if (new Set(agent._relations.map((r) => r.id)).size !== agent._relations.length) fail('duplicate relationships');
     if (a._deathCause !== undefined) {
@@ -1321,7 +1484,7 @@ function restore(raw) {
     sim.civilization = restoreCivilization(raw.civilization, sim);
     for (let index = 0; index < sim.agents.length; index++) Object.assign(sim.agents[index], restoreMind(raw.agents[index], sim));
     for (let index = 0; index < sim.groups.length; index++) sim.groups[index].civilization = restoreSociety(raw.groups[index], sim);
-    sim.regions = array(raw.regions, 'regions', 30).map((region) => {
+    sim.regions = array(raw.regions, 'regions', 60).map((region) => {
       object(region, 'region');
       if (!TERRAIN.includes(region.biome) || region.biome === 'water') fail('region biome');
       const restored = { id: id(region.id, 'region ID'), name: text(region.name, 'region name', 80),

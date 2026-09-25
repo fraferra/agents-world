@@ -6,6 +6,7 @@
  */
 import { initializeCulture } from './culture.js';
 import { feel, recordEpisode } from './psyche.js';
+import { seafaring } from './infrastructure.js';
 
 const clamp = (value, low = 0, high = 1) => Math.min(high, Math.max(low, value));
 const round = value => Math.round(value * 1e4) / 1e4 || 0;
@@ -34,11 +35,18 @@ function chooseSite(sim, group, near) {
     const range = distance(place, group);
     if (range >= 14 && range <= 60 && (place.kind === 'food' || place.kind === 'fish' || place.kind === 'game')) remembered.push({ x: place.x, y: place.y, range });
   }
-  for (let attempt = 0; attempt < 36 + Math.min(12, remembered.length); attempt++) {
+  // Seafaring peoples also look across the water, to islands their ships can reach.
+  const voyage = seafaring(group), lands = sim._landmasses(), home = lands.label[Math.floor(group.y) * sim.width + Math.floor(group.x)];
+  const overseas = voyage.reach >= 60 ? 16 : 0;
+  for (let attempt = 0; attempt < 36 + Math.min(12, remembered.length) + overseas; attempt++) {
     const scouted = attempt < remembered.length && attempt < 12 ? remembered[attempt] : null;
-    const angle = sim._random() * Math.PI * 2, range = scouted ? scouted.range : reach + sim._random() * 22;
+    const abroad = attempt >= 36 + Math.min(12, remembered.length);
+    const angle = sim._random() * Math.PI * 2, range = scouted ? scouted.range : abroad ? 20 + sim._random() * Math.min(voyage.reach, 160) : reach + sim._random() * 22;
     const point = scouted ? sim._landNear(scouted.x, scouted.y) : sim._landNear(group.x + Math.cos(angle) * range, group.y + Math.sin(angle) * range);
     if (distance(point, group) < 12) continue;
+    // Across the water only with boats that can make the crossing.
+    const there = lands.label[Math.floor(point.y) * sim.width + Math.floor(point.x)];
+    if (there !== home && distance(point, group) > voyage.reach) continue;
     if (sim.groups.some(other => distance(other, point) < claimRadius(other) + 4)) continue;
     const site = { food: 0, fertility: 0, wood: 0, stone: 0, ore: 0, clay: 0, fish: 0, game: 0 };
     let land = 0;
@@ -52,7 +60,8 @@ function chooseSite(sim, group, near) {
     for (const key of Object.keys(site)) site[key] /= land;
     // Pioneers seek good land, plus whatever their home lacks.
     const lacking = Object.keys(site).reduce((sum, key) => sum + Math.max(0, site[key] - (near[key] || 0)), 0);
-    const score = site.food * 2 + site.fertility * 1.5 + site.wood + site.fish + site.game * .5 + lacking * 1.5 - range * .01;
+    // Unclaimed land across the sea is a prize in itself.
+    const score = site.food * 2 + site.fertility * 1.5 + site.wood + site.fish + site.game * .5 + lacking * 1.5 - range * .01 + (there !== home ? 1 : 0);
     if (score > bestScore) { bestScore = score; best = point; }
   }
   return best;
@@ -75,15 +84,19 @@ export function considerExpansion(sim, group, near, found) {
   // A society expands when its people, its culture and its leader want to, or the land forces it.
   // Fields, workshops and halls root people: a settled town sends colonists mainly under real land pressure.
   const rooted = Math.min(.25, Object.values(civ.buildings).reduce((a, b) => a + b, 0) * .015);
-  const desire = culture.norms.expansion * .3 + culture.pressure * .35 + eager * .2 + (leader?.psyche?.expansion ?? .4) * .15 * (.5 + culture.norms.hierarchy) + (civ.buildings.hall ? .08 : 0) - rooted;
+  // Ships open the islands: a seafaring people sees empty land across the water as opportunity.
+  const venture = seafaring(group).reach >= 60 ? .14 + culture.norms.expansion * .1 + culture.norms.mercantile * .06 : 0;
+  const desire = culture.norms.expansion * .3 + culture.pressure * .35 + eager * .2 + (leader?.psyche?.expansion ?? .4) * .15 * (.5 + culture.norms.hierarchy) + (civ.buildings.hall ? .08 : 0) - rooted + venture;
   if (desire < .36 || sim._random() >= (desire - .32) * .5) return null;
   const site = chooseSite(sim, group, near);
   if (!site) return null;
   // The most eager go; nobody is sent against their will.
   const pioneers = adults.filter(agent => agent.id !== culture.leaderId && (agent.psyche?.expansion ?? .4) > .45).sort((a, b) => (b.psyche?.expansion ?? 0) - (a.psyche?.expansion ?? 0));
-  const count = Math.min(pioneers.length, Math.max(6, Math.round(people.length * (.18 + desire * .15))));
-  // A colony needs enough pioneers to survive, and the mother community enough people to carry on.
-  if (count < 6 || people.length - count < 12) return null;
+  const overseas = sim._landmasses().label[Math.floor(site.y) * sim.width + Math.floor(site.x)] !== sim._landmasses().label[Math.floor(group.y) * sim.width + Math.floor(group.x)];
+  const crew = overseas ? 4 : 6;
+  const count = Math.min(pioneers.length, Math.max(crew, Math.round(people.length * (.18 + desire * .15))));
+  // A colony needs enough pioneers to survive (a ship's crew may be fewer), and the mother community enough people to carry on.
+  if (count < crew || people.length - count < 12) return null;
   const chosen = new Set(pioneers.slice(0, count));
   for (const agent of [...chosen]) {
     const partner = sim._agentMap.get(agent.partnerId);

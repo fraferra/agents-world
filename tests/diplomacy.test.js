@@ -7,7 +7,7 @@ import { advanceDiplomacy, tradeAccess, recordTrade, restoreDiplomacy } from '..
 
 function neighbors() {
   const sim = new Simulation({ seed: 'neighboring-camps', population: 16, size: 'compact' });
-  const center = sim._landNear(30, 30);
+  const center = sim._mainlandNear(48, 32);
   const groups = [0, 1].map(index => {
     const group = initializeSociety({ id: sim.nextGroupId++, name: `Camp ${index}`, color: '#809260', ...center, members: [], food: 20, wood: 10, shelters: 2, culture: 'Kinship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
     initializeGroupIdeas(group);

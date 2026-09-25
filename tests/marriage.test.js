@@ -23,8 +23,8 @@ function twoBands() {
   setup(seeker, 'male', 25); setup(uncle, 'male', 60); setup(aunt, 'female', 58); setup(bride, 'female', 24);
   for (const host of hosts) setup(host, 'male', 62);
   seeker.psyche.personality.openness = .8;
-  const home = band('Home Camp', sim._landNear(20.5, 30.5), [seeker, uncle, aunt], 10);
-  const away = band('River Camp', sim._landNear(40.5, 30.5), [bride, ...hosts], 60);
+  const home = band('Home Camp', sim._mainlandNear(38, 32), [seeker, uncle, aunt], 10);
+  const away = band('River Camp', sim._mainlandNear(58, 32), [bride, ...hosts], 60);
   sim._buildSpatial();
   return { sim, home, away, seeker, bride };
 }
