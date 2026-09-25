@@ -14,7 +14,16 @@ const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 /** Claimed land around a settlement: grows with people and standing. */
 export function claimRadius(group) {
-  return 5 + Math.sqrt(group.members.length) * 1.2 + (group.civilization?.culture?.tier || 0) * 2;
+  // Territory grows with people, standing and development: works, roads and industry reach farther.
+  const built = Object.values(group.civilization?.buildings || {}).reduce((a, b) => a + b, 0);
+  return 5 + Math.sqrt(group.members.length) * 1.2 + (group.civilization?.culture?.tier || 0) * 2 + Math.min(8, Math.sqrt(built) * 1.2);
+}
+
+/** How far a society's development pushes it outward: tier, statehood and the means to reach new land. */
+export function development(sim, group) {
+  const civ = group.civilization, known = civ.technologies;
+  return Math.min(.45, (civ.culture?.tier || 0) * .06 + (sim.polity?.countries.some(country => country.members.includes(group.id)) ? .1 : 0)
+    + (known.includes('governance') ? .05 : 0) + (civ.buildings.railway ? .05 : 0) + (civ.buildings.dock ? .05 : 0) + (civ.buildings.airport ? .05 : 0) + Math.min(.1, (civ.breakthroughs?.length || 0) * .01));
 }
 
 /** How hard a society presses on the land it can reach (0 comfortable – 1 overcrowded). */
@@ -77,16 +86,19 @@ export function considerExpansion(sim, group, near, found) {
   culture.pressure = round(landPressure(group, near));
   const people = group.members.map(id => sim._agentMap.get(id)).filter(Boolean);
   const adults = people.filter(agent => agent.age >= 18 && agent.age < 55 && agent.health > 50);
-  if (people.length < 16 || adults.length < 8 || sim.day - culture.lastColony < 720 || sim.day - culture.founded < 720) return null;
+  // Developed societies are ready to found the next settlement sooner.
+  const grown = development(sim, group);
+  if (people.length < 16 || adults.length < 8 || sim.day - culture.lastColony < Math.max(300, 720 - grown * 900) || sim.day - culture.founded < 720) return null;
   const leader = sim._agentMap.get(culture.leaderId);
   const drives = adults.map(agent => agent.psyche?.expansion ?? .4);
   const eager = drives.filter(drive => drive > .55).length / adults.length;
   // A society expands when its people, its culture and its leader want to, or the land forces it.
   // Fields, workshops and halls root people: a settled town sends colonists mainly under real land pressure.
-  const rooted = Math.min(.25, Object.values(civ.buildings).reduce((a, b) => a + b, 0) * .015);
+  // ...until a society develops the institutions and means to settle new land: then it expands more and more.
+  const rooted = Math.min(.25, Object.values(civ.buildings).reduce((a, b) => a + b, 0) * .015) * (1 - grown * 2);
   // Ships open the islands: a seafaring people sees empty land across the water as opportunity.
   const venture = seafaring(group).reach >= 60 ? .14 + culture.norms.expansion * .1 + culture.norms.mercantile * .06 : 0;
-  const desire = culture.norms.expansion * .3 + culture.pressure * .35 + eager * .2 + (leader?.psyche?.expansion ?? .4) * .15 * (.5 + culture.norms.hierarchy) + (civ.buildings.hall ? .08 : 0) - rooted + venture;
+  const desire = culture.norms.expansion * .3 + culture.pressure * .35 + eager * .2 + (leader?.psyche?.expansion ?? .4) * .15 * (.5 + culture.norms.hierarchy) + (civ.buildings.hall ? .08 : 0) - rooted + venture + grown;
   if (desire < .36 || sim._random() >= (desire - .32) * .5) return null;
   const site = chooseSite(sim, group, near);
   if (!site) return null;

@@ -135,7 +135,8 @@ export function proposeFrontier(sim, group) {
   if (pair === 'information+machines' && depth >= 4) { effects.automation += .08 * strength * (depth - 3); effects.research += .06 * strength * (depth - 3); }
   const side = sim._random() < .35 ? pick(sim, SIDE_EFFECTS) : null;
   if (side) for (const [key, value] of Object.entries(side)) effects[key] += value * (1 + depth * .1);
-  for (const key of ADVANCE_KEYS) effects[key] = round(effects[key]);
+  // Even a leap has limits: no single advance multiplies anything more than sixfold.
+  for (const key of ADVANCE_KEYS) effects[key] = round(clamp(effects[key], -3, 5));
   const required = Math.round(260 * 1.32 ** depth);
   // Prototypes are built from what this society can actually make.
   const b = civ.buildings, poweredWorks = b.factory > 0 && (b.powerplant > 0 || b.reactor > 0);
@@ -245,7 +246,7 @@ const num = (value, field, min = -10, max = 1e9) => (typeof value === 'number' &
 const text = (value, field, max = 200) => (typeof value === 'string' && value.length && value.length <= max ? value : invalid(field));
 function effectsOf(raw, field) {
   if (!raw || typeof raw !== 'object') invalid(field);
-  return Object.fromEntries(ADVANCE_KEYS.map(key => [key, num(raw[key] ?? 0, field, -10, 10)]));
+  return Object.fromEntries(ADVANCE_KEYS.map(key => [key, num(raw[key] ?? 0, field, -100, 100)]));
 }
 function costOf(raw) {
   if (!raw || typeof raw !== 'object') invalid('cost');

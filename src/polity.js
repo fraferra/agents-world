@@ -191,7 +191,8 @@ function countries(sim) {
       if (id === country.capitalId) return true;
       const r = relationBetween(sim, capital, member);
       if (r?.status === 'war') { sim._event('war', `${member.name} breaks away from ${country.name}.`, { groupId: member.id }); return false; }
-      return country.government === 'empire' ? overlordOf(sim, member) === capital || r?.status === 'alliance' || member.civilization.culture?.parentId === capital.id : r?.status === 'alliance' || member.civilization.culture?.parentId === capital.id || overlordOf(sim, member) === capital;
+      // Members stay while bound to the country: ruled, allied, founded from within it, or at peace with the capital.
+      return overlordOf(sim, member) === capital || r?.status === 'alliance' || country.members.includes(member.civilization.culture?.parentId) || (r && r.tension < 60);
     });
     if (country.members.length < 2 && sim.day - country.founded > 240) {
       polity.countries = polity.countries.filter(other => other !== country);
@@ -216,15 +217,25 @@ function countries(sim) {
     polity.countries.push(country);
     sim._event('group', `${country.name} is proclaimed, uniting ${country.members.length} societies with ${group.name} as its capital.`, { groupId: group.id });
   }
-  // Growth: allies, colonies and tributaries of a capital join its country.
+  // Growth: colonies of any member, and allies and tributaries of the capital, join the country;
+  // small independent neighbours of a developed country join by treaty.
   for (const country of polity.countries) {
     const capital = sim._groupMap.get(country.capitalId);
+    if (!capital) continue;
+    const developed = (capital.civilization.culture?.tier || 0) >= 3 || country.members.length >= 4;
     for (const other of sim.groups) {
-      if (countryOf(sim, other) || !capital) continue;
+      if (countryOf(sim, other)) continue;
       const r = relationBetween(sim, capital, other);
-      if ((overlordOf(sim, other) === capital || (r?.status === 'alliance' && other.civilization.culture?.parentId === capital.id)) && sim._random() < .5) {
+      const colony = country.members.includes(other.civilization.culture?.parentId);
+      const joins = overlordOf(sim, other) === capital || colony || (r?.status === 'alliance' && other.civilization.culture?.parentId === capital.id);
+      const neighbour = developed && r && r.status !== 'war' && r.tension < 40 && other.members.length < capital.members.length * .5
+        && country.members.some(id => { const member = sim._groupMap.get(id); return member && distance(member, other) < 30; });
+      if (joins && sim._random() < .5) {
         country.members.push(other.id);
         sim._event('group', `${other.name} joins ${country.name}.`, { groupId: other.id });
+      } else if (neighbour && sim._random() < .12) {
+        country.members.push(other.id);
+        sim._event('group', `${other.name} accepts the rule of ${country.name} by treaty.`, { groupId: other.id });
       }
     }
   }

@@ -112,7 +112,22 @@ export function conceptionChance(sim, woman, man) {
   if (age <= 0) return 0;
   const nutrition = clamp(1 - Math.max(0, woman.hunger - 15) / 45, .1, 1) * clamp((woman.health - 40) / 40, .2, 1);
   const group = sim._groupMap?.get(woman.groupId);
-  return age * nutrition * (1 / 50) * sim.config.fertility * (man.age < 65 ? 1 : .5) * Math.max(.3, 1 + advances(group).growth);
+  return age * nutrition * (1 / 50) * sim.config.fertility * (man.age < 65 ? 1 : .5) * clamp(1 + advances(group).growth, .5, 1.3) * (1 - demographicTransition(group, woman));
+}
+
+/**
+ * The demographic transition: as children survive, schooling spreads, wealth
+ * grows and modern institutions take over what families once did, people choose
+ * fewer children. Returns the share of natural fertility forgone (0 to 0.7).
+ */
+export function demographicTransition(group, woman) {
+  const civ = group?.civilization;
+  if (!civ) return 0;
+  const b = civ.buildings, known = civ.technologies;
+  return clamp((known.includes('vaccination') ? .1 : 0) + Math.min(2, b.hospital || 0) * .08 + Math.min(1, b.school || 0) * .05 + Math.min(1, b.library || 0) * .03
+    + (b.factory ? .08 : 0) + (b.datacenter ? .12 : 0) + Math.min(.15, Math.log1p(woman.wealth || 0) * .03) + Math.min(.12, (civ.breakthroughs?.length || 0) * .004)
+    // When children reliably survive, families have fewer of them.
+    + Math.max(0, careLevel(group) - .6) * .35, 0, .7);
 }
 
 /** A hard biological limit on top of the hazards; almost no one reaches it. */
