@@ -10,6 +10,7 @@
  * (Bocquet-Appel's Neolithic Demographic Transition). See REALISM.md.
  */
 import { industry } from './civilization.js';
+import { advances } from './breakthroughs.js';
 
 export const SILER = Object.freeze({
   forager: Object.freeze({ a1: .422, b1: 1.131, a2: .013, a3: 1.47e-4, b3: .086 }),
@@ -51,7 +52,7 @@ export function careLevel(group) {
   // hazards fall below the acculturated values (see annualHazard).
   return clamp((known.includes('herbalism') ? .12 : 0) + (known.includes('medicine') ? .3 : 0) + Math.min(2, b.clinic || 0) * .15 + Math.min(1, b.apothecary || 0) * .08
     + Math.min(1, (civ.stock.remedies || 0) / Math.max(1, group.members.length * .15)) * .1
-    + (known.includes('vaccination') ? .25 : 0) + Math.min(2, b.hospital || 0) * .2, 0, 1.6);
+    + (known.includes('vaccination') ? .25 : 0) + Math.min(2, b.hospital || 0) * .2 + advances(group).health, 0, 2);
 }
 
 /**
@@ -110,7 +111,8 @@ export function conceptionChance(sim, woman, man) {
   const age = naturalFertility(woman.age) / PEAK;
   if (age <= 0) return 0;
   const nutrition = clamp(1 - Math.max(0, woman.hunger - 15) / 45, .1, 1) * clamp((woman.health - 40) / 40, .2, 1);
-  return age * nutrition * (1 / 50) * sim.config.fertility * (man.age < 65 ? 1 : .5);
+  const group = sim._groupMap?.get(woman.groupId);
+  return age * nutrition * (1 / 50) * sim.config.fertility * (man.age < 65 ? 1 : .5) * Math.max(.3, 1 + advances(group).growth);
 }
 
 /** A hard biological limit on top of the hazards; almost no one reaches it. */

@@ -4,6 +4,7 @@
 import { attemptInnovation, reflectBelief, spreadIdeas, innovationEffects, knowsIdea } from './innovation.js';
 import { tradeAccess, recordTrade } from './diplomacy.js';
 import { routeFactor, plannedRoute } from './infrastructure.js';
+import { advances, canPushFrontier, proposeFrontier, completeFrontier, restoreSocietyFrontier } from './breakthroughs.js';
 import { keptShare, addWealth, standing } from './economy.js';
 import { deliberate, recordReasoning, clearReasoning, reinforce, livePsyche, appraise, appreciate, attune, teachTechnique, converse, trustIn, techniqueFactor, knownExpert, rememberPlace, recallPlace, revisitPlace, practise, TECHNIQUES as PRACTICES } from './psyche.js';
 
@@ -130,7 +131,7 @@ export function initializeSociety(group) {
   group.civilization = {
     technologies: [], research: {}, project: null, stock: blank(stockKeys),
     buildings: blank(Object.keys(BUILDINGS)), workforce: {}, production: blank(productionKeys), diet: blank(DIET), tradePartners: [], lastTradeDay: -1,
-    neglect: {}, outbreakUntil: 0, immuneUntil: 0,
+    neglect: {}, outbreakUntil: 0, immuneUntil: 0, breakthroughs: [], frontier: null,
   };
   return group;
 }
@@ -240,11 +241,11 @@ export function dietVariety(group) {
 
 /** Real effects of institutions a society has built. */
 export function facilities(group) {
-  const b = group.civilization.buildings, modern = industry(group);
+  const b = group.civilization.buildings, modern = industry(group), fx = advances(group);
   return {
-    research: (1 + Math.min(2, b.library || 0) * .2) * modern.computing * (modern.powered ? 1.1 : 1), trade: (1 + Math.min(2, b.market || 0) * .3) * modern.reach,
+    research: (1 + Math.min(2, b.library || 0) * .2) * modern.computing * (modern.powered ? 1.1 : 1) * (1 + fx.research), trade: (1 + Math.min(2, b.market || 0) * .3) * modern.reach * (1 + fx.trade),
     fishing: (1 + Math.min(4, b.fishery || 0) * .3) * (b.dock ? 1.3 : 1),
-    defense: 1 + Math.min(2, b.walls || 0) * .3, harvest: (b.observatory ? 1.1 : 1) * modern.fertiliser, drought: b.observatory ? .15 : 0, cohesion: Math.min(2, (b.temple || 0) + (b.hall || 0)),
+    defense: 1 + Math.min(2, b.walls || 0) * .3, harvest: (b.observatory ? 1.1 : 1) * modern.fertiliser * Math.max(.3, 1 + fx.food), drought: b.observatory ? .15 : 0, cohesion: Math.min(2, (b.temple || 0) + (b.hall || 0)),
   };
 }
 
@@ -252,7 +253,8 @@ export function facilities(group) {
 export function powered(group) {
   const b = group?.civilization?.buildings, stock = group?.civilization?.stock;
   if (!b) return false;
-  return (b.reactor > 0 && stock.uranium >= .01) || (b.powerplant > 0 && stock.coal >= .05);
+  // Enough energy breakthroughs (dams, solar, fusion) power a town without fuel.
+  return (b.reactor > 0 && stock.uranium >= .01) || (b.powerplant > 0 && stock.coal >= .05) || ((b.powerplant > 0 || b.reactor > 0) && advances(group).energy >= .45);
 }
 
 /**
@@ -262,14 +264,14 @@ export function powered(group) {
  */
 export function industry(group) {
   const civ = group?.civilization, b = civ?.buildings;
-  if (!b || !(b.factory || b.railway || b.powerplant || b.reactor || b.datacenter || civ.technologies.includes('chemistry'))) return IDLE;
+  if (!b || !(b.factory || b.railway || b.powerplant || b.reactor || b.datacenter || civ.technologies.includes('chemistry') || civ.breakthroughs?.length)) return IDLE;
   const power = powered(group), n = Math.max(1, group.members.length);
   const machines = b.factory ? Math.min(1, civ.stock.machines / Math.max(2, n * .12)) : 0;
   const coalPower = b.powerplant > 0 && !(b.reactor > 0 && civ.stock.uranium >= .01) && civ.stock.coal >= .05;
   return {
     powered: power, machines, mechanization: 1 + machines * .6, electric: power ? 1.3 : 1,
     fertiliser: civ.technologies.includes('chemistry') ? 1.6 : 1, computing: b.datacenter > 0 && power ? 1.6 : 1, reach: b.railway > 0 ? 1.5 : 1,
-    smog: Math.min(1, Math.min(4, b.factory || 0) * .12 + (coalPower ? Math.min(2, b.powerplant) * .18 : 0) + Math.min(2, b.railway || 0) * .04),
+    smog: clamp(Math.min(4, b.factory || 0) * .12 + (coalPower ? Math.min(2, b.powerplant) * .18 : 0) + Math.min(2, b.railway || 0) * .04 + advances(group).pollution),
   };
 }
 const IDLE = Object.freeze({ powered: false, machines: 0, mechanization: 1, electric: 1, fertiliser: 1, computing: 1, reach: 1, smog: 0 });
@@ -573,6 +575,12 @@ export function considerCivilization(sim, agent, group) {
     if (!obtainable(group, projectTech.materials, near)) civ.project = null;
     else want(projectTech.materials, 45, `Demonstrating ${projectTech.name.toLowerCase()} needs real materials.`);
   }
+  // With the known tree exhausted, researchers push past it.
+  if (!civ.project && agent.age >= 14 && canPushFrontier(group)) {
+    civ.frontier ||= proposeFrontier(sim, group);
+    const frontier = civ.frontier;
+    if (frontier && frontier.progress < frontier.required) add('research', 20 + mind.values.mastery * 21 + agent.traits.curiosity * 15 + agent.skills.scholarship * .2 + mind.needs.stimulation * .15 + mind.ambition * 7, `Push past the known: work toward ${frontier.name.toLowerCase()}.`, ['Question what is known', 'Build and test prototypes', 'Share what works']);
+  }
   if (civ.project && !awaiting && agent.age >= 14) add('research', 20 + mind.values.mastery * 21 + agent.traits.curiosity * 15 + agent.skills.scholarship * .2 + mind.needs.stimulation * .15 + mind.ambition * 7 + mind.beliefs.opportunity * 4, `Help investigate ${techById.get(civ.project.technology).name.toLowerCase()} with the community.`, ['Join the shared investigation', 'Experiment and compare ideas', 'Share a working technique']);
   if (agent.age >= 14) {
     const experiment = civ.experiment;
@@ -602,7 +610,8 @@ export function considerCivilization(sim, agent, group) {
   // Stock a society is working toward: what the next building and demonstration both require.
   // The next road or railway line counts too, so smiths and miners work toward it.
   const route = daily(sim, 'route', group, civ.buildings.railway * 1000 + civ.tradePartners.length, () => plannedRoute(sim, group));
-  const required = key => (building ? BUILDINGS[building].cost[key] || 0 : 0) + (awaiting ? projectTech.materials[key] || 0 : 0) + (route?.cost[key] || 0);
+  const frontierDue = civ.frontier && civ.frontier.progress >= civ.frontier.required ? civ.frontier.cost : null;
+  const required = key => (building ? BUILDINGS[building].cost[key] || 0 : 0) + (awaiting ? projectTech.materials[key] || 0 : 0) + (route?.cost[key] || 0) + (frontierDue?.[key] || 0);
   if (route) want(route.cost, 36, `Materials for the ${route.kind === 'rail' ? 'railway' : 'road'} to ${route.other.name}.`);
   // Work that supplies a demonstration the whole community is waiting on takes precedence.
   const awaited = awaitedMaterials(group), rush = key => awaited[key] ? 14 : 0;
@@ -713,7 +722,8 @@ export function considerCivilization(sim, agent, group) {
   const handled = execute(sim, agent, group, choice);
   // Machines and electric power take the hardest labour off people's backs.
   const saving = industry(group);
-  if (agent.energy < energyBefore && saving.mechanization * saving.electric > 1) agent.energy += (energyBefore - agent.energy) * (1 - 1 / (saving.mechanization * saving.electric));
+  const relief = saving.mechanization * saving.electric * (1 + Math.max(0, advances(group).automation));
+  if (agent.energy < energyBefore && relief > 1) agent.energy += (energyBefore - agent.energy) * (1 - 1 / relief);
   if (outcome !== null) reinforce(sim, agent, choice.action, outcome);
   if (handled === false) return false;
   if (choice.action === 'farm') sim._civilAssignments.farms.set(group.id, farmWorkers + 1);
@@ -763,7 +773,7 @@ function execute(sim, agent, group, choice) {
   const civ = group.civilization, stock = civ.stock, effects = innovationEffects(sim, group);
   const modern = industry(group);
   // Engineering, machines and electric power each multiply workshop output.
-  const engineering = (civ.technologies.includes('engineering') ? 1.35 : 1) * modern.mechanization * modern.electric;
+  const engineering = (civ.technologies.includes('engineering') ? 1.35 : 1) * modern.mechanization * modern.electric * Math.max(.3, 1 + advances(group).production);
   switch (choice.action) {
     case 'invent': {
       const { successes, failures } = sim.innovation;
@@ -780,13 +790,27 @@ function execute(sim, agent, group, choice) {
       return worked;
     }
     case 'research': {
-      const project = civ.project;
-      if (!project) break;
+      const project = civ.project, frontier = !project ? civ.frontier : null;
+      if (!project && !frontier) break;
       const activePeers = group.members.filter(id => { const peer = sim._agentMap.get(id); return peer && peer.id !== agent.id && peer.mind.policy.action === 'research' && distance(agent, peer) < 8; }).length;
       const cooperation = 1 + Math.min(4, activePeers) * .08 * sim.config.cooperation;
       // Larger, better-connected populations sustain faster innovation (the collective brain).
       const minds = 1 + .12 * Math.log1p(group.members.length / 5) + .04 * Math.min(5, civ.tradePartners.length);
       const effort = RESEARCH_PACE * (.14 + agent.skills.scholarship * .006) * cooperation * (civ.buildings.school ? 1.3 : 1) * effects.learning * (.8 + effects.solidarity * .4) * techniqueFactor(agent, 'research') * facilities(group).research * minds;
+      if (frontier) {
+        // Beyond the known tree: the same work, toward something no one has made before.
+        frontier.progress = Math.min(frontier.required, frontier.progress + effort);
+        if (!frontier.contributors.includes(agent.id)) frontier.contributors.push(agent.id);
+        agent.action = `researching ${frontier.name.toLowerCase()}`;
+        experience(agent, 'scholarship', .3); agent.energy = clamp(agent.energy - 2.5, 0, 100);
+        outcome = .15;
+        if (frontier.progress >= frontier.required) {
+          const made = completeFrontier(sim, group, agent);
+          if (made) { outcome = 1; if (agent.psyche) appraise(sim, agent, 'discovery', { name: made.name.toLowerCase(), activity: 'research' }); }
+          else agent.action = `awaiting materials for ${frontier.name.toLowerCase()}`;
+        }
+        break;
+      }
       project.progress = Math.min(project.required, project.progress + effort);
       civ.research[project.technology] = project.progress;
       if (!project.contributors.includes(agent.id)) project.contributors.push(agent.id);
@@ -1334,7 +1358,7 @@ export function restoreSociety(rawGroup, sim) {
     economy = { value: numeric(e.value, 'economic value', 1e15), output: numeric(e.output, 'economic output', 1e15, -1), history: list(e.history, 'economic history', 20).map(value => numeric(value, 'economic record', 1e15)),
       yearDay: numeric(e.yearDay, 'economic year', sim.day, 0, true), boomDay: numeric(e.boomDay, 'boom day', sim.day, -1, true) };
   }
-  return { ...(economy ? { economy } : {}), technologies: known, research, project, stock: numbers(fill(raw.stock, stockKeys), stockKeys, 'stock', Number.MAX_SAFE_INTEGER), buildings, workforce, production: numbers(fill(raw.production, productionKeys), productionKeys, 'production', 1e15), diet, neglect, outbreakUntil, immuneUntil, ...(survey ? { survey } : {}), tradePartners: ids(raw.tradePartners, 'trade partners', Number.MAX_SAFE_INTEGER, sim.nextGroupId), lastTradeDay: numeric(raw.lastTradeDay, 'last trade day', sim.day, -1, true) };
+  return { ...(economy ? { economy } : {}), ...restoreSocietyFrontier(raw, sim, known), technologies: known, research, project, stock: numbers(fill(raw.stock, stockKeys), stockKeys, 'stock', Number.MAX_SAFE_INTEGER), buildings, workforce, production: numbers(fill(raw.production, productionKeys), productionKeys, 'production', 1e15), diet, neglect, outbreakUntil, immuneUntil, ...(survey ? { survey } : {}), tradePartners: ids(raw.tradePartners, 'trade partners', Number.MAX_SAFE_INTEGER, sim.nextGroupId), lastTradeDay: numeric(raw.lastTradeDay, 'last trade day', sim.day, -1, true) };
 }
 
 export function restoreCivilization(raw, sim) {

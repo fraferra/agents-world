@@ -190,3 +190,4 @@
 .tier-badge.tier-4{background:#e3ecf1;color:#5f7f94}
 .relation-card.tributary{border-color:#d9cbe3;background:#f8f5fa}
 .economy-line{display:flex;align-items:center;gap:12px;margin:6px 0 10px}.economy-line>div{display:flex;flex-direction:column;min-width:0}.economy-line strong{font-size:18px;color:#5f6f4d}.economy-line span{font-size:10px;color:#788669}.economy-line svg{flex:1;height:30px;min-width:60px}
+.effect.negative{background:#f4ece2;border-color:#e8d9c8;color:#9a7859}

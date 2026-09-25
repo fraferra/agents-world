@@ -13,6 +13,7 @@ import { initializeGlobalCulture, initializeCulture, advanceCulture, cultureLabe
 import { considerExpansion, considerFission } from './expansion.js';
 import { establishKinship } from './diplomacy.js';
 import { initializeInfrastructure, advanceInfrastructure, infrastructureStats, restoreInfrastructure, linkBetween, seafaring, reachable } from './infrastructure.js';
+import { initializeBreakthroughs, advanceBreakthroughs, breakthroughStats, restoreBreakthroughs } from './breakthroughs.js';
 import { performAct, endureConditions, activeConditions, PLAGUE_DAYS, WINTER_DAYS } from './acts.js';
 import { initializeGlobalPsyche, initializePsyche, restoreGlobalPsyche, restorePsyche, restoreRelationExtras, psycheStats, moodBalance, appraise, acquaint, appreciate, techniqueFactor, rememberPlace, recallPlace, revisitPlace, recordEpisode } from './psyche.js';
 
@@ -105,6 +106,7 @@ export class Simulation {
     initializeGlobalPsyche(this);
     initializeGlobalCulture(this);
     initializeInfrastructure(this);
+    initializeBreakthroughs(this);
     initializeVital(this);
     this._populate();
     this._event('world', `${this.agents.length} individuals arrive in a new world. Their choices will shape what follows.`);
@@ -1165,6 +1167,7 @@ export class Simulation {
       this.diplomacy.relations = this.diplomacy.relations.filter((relation) => this._groupMap.has(relation.a) && this._groupMap.has(relation.b));
       advanceCivilization(this);
       advanceInfrastructure(this);
+      advanceBreakthroughs(this);
       if (this.day % 60 === 0) {
         for (const agent of this.agents) {
           for (const relation of agent._relations) if (this.day - relation.lastSeen > 60) relation.strength *= 0.92;
@@ -1227,7 +1230,7 @@ export class Simulation {
     // Descriptive renewal estimate, never a birth condition. Count overlapping
     // cultivated land once, using the most efficient technology available there.
     for (const [index, conversion] of farmPlots) growth += this.tiles[index].fertility * 0.008 * conversion;
-    return { ...civilizationStats(this), ...innovationStats(this), ...diplomacyStats(this), ...infrastructureStats(this), ...psycheStats(this), population: this.agents.length, births: this.births, deaths: this.deaths, arrivals: this.arrivals, groups: this.groups.length, ...vitalStats(this), wealthGini: gini(this.agents.filter((a) => a.age >= 16).map((a) => a.wealth || 0)),
+    return { ...civilizationStats(this), ...innovationStats(this), ...diplomacyStats(this), ...infrastructureStats(this), ...breakthroughStats(this), ...psycheStats(this), population: this.agents.length, births: this.births, deaths: this.deaths, arrivals: this.arrivals, groups: this.groups.length, ...vitalStats(this), wealthGini: gini(this.agents.filter((a) => a.age >= 16).map((a) => a.wealth || 0)),
       food, happiness: happiness / (this.agents.length || 1), averageAge: age / (this.agents.length || 1), generation,
       carryingCapacity: Math.round(growth * this.config.abundance * 0.82 / 0.23 * (this.weather.droughtUntil > this.day ? 0.22 : this.weather.rainUntil > this.day ? 1.8 : 1) * (this.weather.winterUntil > this.day ? 0.25 : 1)) };
   }
@@ -1243,7 +1246,7 @@ export class Simulation {
     return {
       version: 7, seed: this.seed, day: this.day, width: this.width, height: this.height, config: { ...this.config },
       regions: this.regions.map((region) => ({ ...region })), civilization: structuredClone(this.civilization),
-      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
+      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), breakthroughs: structuredClone(this.breakthroughs), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
       conditions: activeConditions(this), tiles: this.tiles.map((tile) => ({ ...tile })),
       agents: this.agents.map((agent) => {
         const { id, name, x, y, age, health, hunger, energy, social, happiness, groupId, partnerId, action, generation } = agent;
@@ -1266,13 +1269,16 @@ export class Simulation {
    * Generated ideas never change once recorded, so only those after
    * `discoveriesFrom` are sent. Tiles are sent separately (see packTiles).
    */
-  view({ detailId = null, discoveriesFrom = 0 } = {}) {
+  view({ detailId = null, discoveriesFrom = 0, breakthroughsFrom = 0 } = {}) {
     const { discoveries, ...innovation } = this.innovation;
     return {
       version: 7, seed: this.seed, day: this.day, width: this.width, height: this.height, config: { ...this.config },
       regions: this.regions.map((region) => ({ ...region })), civilization: structuredClone(this.civilization),
       innovation: { ...structuredClone(innovation), discoveriesFrom, discoveries: structuredClone(discoveries.slice(discoveriesFrom)) },
-      diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
+      diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure),
+      // Breakthroughs never change once made; only new ones are sent.
+      breakthroughs: { nextId: this.breakthroughs.nextId, from: breakthroughsFrom, list: structuredClone(this.breakthroughs.list.slice(breakthroughsFrom)) },
+      psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
       conditions: activeConditions(this),
       agents: this.agents.map((agent) => {
         const { id, name, x, y, age, health, hunger, energy, social, happiness, groupId, partnerId, action, generation } = agent;
@@ -1315,7 +1321,7 @@ export class Simulation {
       config: { ...this.config }, rngState: this.rngState, nextAgentId: this.nextAgentId, nextGroupId: this.nextGroupId, nextEventId: this.nextEventId,
       births: this.births, deaths: this.deaths, arrivals: this.arrivals, weather: { ...this.weather },
       regions: this.regions.map((region) => ({ ...region })), civilization: structuredClone(this.civilization),
-      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
+      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), breakthroughs: structuredClone(this.breakthroughs), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
       tiles: this.tiles.map((tile) => ({ ...tile })),
       agents: this.agents.map((agent) => ({ ...agent, mind: structuredClone(agent.mind), psyche: structuredClone(agent.psyche), skills: { ...agent.skills }, knowledge: [...agent.knowledge], ideas: [...agent.ideas], convictions: { ...agent.convictions }, traits: { ...agent.traits }, inventory: { ...agent.inventory },
         parentIds: [...agent.parentIds], children: [...agent.children], _relations: agent._relations.map((relation) => ({ ...relation })) })),
@@ -1405,6 +1411,7 @@ function restore(raw) {
   initializeInnovation(sim);
   initializeDiplomacy(sim);
   initializeInfrastructure(sim);
+  initializeBreakthroughs(sim);
   initializeGlobalPsyche(sim);
   initializeGlobalCulture(sim);
   sim._restoreVersion = raw.version;
@@ -1482,6 +1489,8 @@ function restore(raw) {
     sim._makeRegions();
   } else {
     sim.civilization = restoreCivilization(raw.civilization, sim);
+    // The breakthrough registry precedes the societies that hold its entries.
+    sim.breakthroughs = restoreBreakthroughs(raw.breakthroughs, sim);
     for (let index = 0; index < sim.agents.length; index++) Object.assign(sim.agents[index], restoreMind(raw.agents[index], sim));
     for (let index = 0; index < sim.groups.length; index++) sim.groups[index].civilization = restoreSociety(raw.groups[index], sim);
     sim.regions = array(raw.regions, 'regions', 60).map((region) => {

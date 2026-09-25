@@ -12,6 +12,7 @@ let publishCost = 0;
 // only for the person being inspected.
 let detailId = null;
 let sentDiscoveries = 0;
+let sentBreakthroughs = 0;
 let staticTilesSent = false;
 let lastTiles = -Infinity;
 let visible = true;
@@ -20,8 +21,9 @@ const TILE_INTERVAL = 3000;
 function publish({ tiles = false } = {}) {
   const started = performance.now();
   if (simulation) {
-    const snapshot = simulation.view({ detailId, discoveriesFrom: sentDiscoveries });
+    const snapshot = simulation.view({ detailId, discoveriesFrom: sentDiscoveries, breakthroughsFrom: sentBreakthroughs });
     sentDiscoveries = simulation.innovation.discoveries.length;
+    sentBreakthroughs = simulation.breakthroughs.list.length;
     let packed = null;
     if (tiles || !staticTilesSent || started - lastTiles > TILE_INTERVAL) {
       packed = simulation.packTiles(!staticTilesSent);
@@ -41,7 +43,7 @@ self.onmessage = ({ data: { id, type, payload = {} } }) => {
       case 'init': {
         const next = payload.state ? Simulation.deserialize(payload.state) : new Simulation(payload.config);
         simulation = next;
-        sentDiscoveries = 0; staticTilesSent = false; detailId = null;
+        sentDiscoveries = 0; sentBreakthroughs = 0; staticTilesSent = false; detailId = null;
         running = payload.running !== false;
         accumulator = 0;
         lastTime = performance.now();

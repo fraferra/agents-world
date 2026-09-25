@@ -121,6 +121,7 @@ $('#world-canvas').addEventListener('pointerleave', () => { $('#map-tooltip').hi
 // place: tiles arrive as typed arrays every few seconds, ideas only when new.
 let tileStore = [];
 let ideaRegistry = [];
+let advanceRegistry = [];
 const TERRAIN_NAMES = ['water', 'grass', 'forest', 'sand', 'mountain'];
 let tilesVersion = 0;
 function absorb(next, packed) {
@@ -135,6 +136,10 @@ function absorb(next, packed) {
   if (innovation.discoveriesFrom === 0) ideaRegistry = innovation.discoveries;
   else for (const idea of innovation.discoveries) ideaRegistry.push(idea);
   innovation.discoveries = ideaRegistry;
+  const advancesSent = next.breakthroughs;
+  if (advancesSent.from === 0) advanceRegistry = advancesSent.list;
+  else for (const entry of advancesSent.list) advanceRegistry.push(entry);
+  advancesSent.list = advanceRegistry;
   return next;
 }
 
@@ -236,6 +241,26 @@ function liveMarkup(element, markup) {
   const scroll = element.scrollTop;
   element.innerHTML = markup;
   element.scrollTop = scroll;
+}
+
+/** Technologies no one wrote in advance: research at the frontier, then every breakthrough made. */
+function renderBreakthroughs(groups) {
+  const content = $('#civilization-content'), list = snapshot.breakthroughs?.list || [];
+  const names = new Map([...TECHNOLOGIES.map(tech => [tech.id, tech.name]), ...list.map(entry => [entry.id, entry.name])]);
+  const ids = new Set(groups.map(group => group.id));
+  const held = new Map();
+  for (const group of snapshot.groups) for (const id of group.civilization?.breakthroughs || []) held.set(id, (held.get(id) || 0) + 1);
+  const shown = (civilizationSociety === 'all' ? list : list.filter(entry => ids.has(entry.originId) || groups.some(group => group.civilization?.breakthroughs?.includes(entry.id)))).slice().reverse();
+  const frontier = groups.filter(group => group.civilization?.frontier);
+  const deepest = list.reduce((max, entry) => Math.max(max, entry.depth), 0);
+  $('#civilization-summary').textContent = `${number(list.length)} breakthroughs · deepest advance ${number(deepest)} · ${number(frontier.length)} ${frontier.length === 1 ? 'society' : 'societies'} at the frontier`;
+  const effectLine = effects => Object.entries(effects).filter(([, value]) => Math.abs(value) >= .01).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([key, value]) => `<span class="effect ${value < 0 ? 'negative' : ''}">${value > 0 ? '+' : '−'}${number(Math.abs(value) * 100)}% ${escape(key)}</span>`).join('');
+  const progress = frontier.map(group => {
+    const f = group.civilization.frontier, pct = percent(f.progress / Math.max(1, f.required) * 100);
+    return `<article class="idea-card"><div class="idea-meta"><span>At the frontier · ${escape(title(f.field))} · depth ${number(f.depth)}</span><span>${escape(group.name)}</span></div><h3>${escape(f.name)}</h3><p class="recipe-line">From ${f.parents.map(id => escape(names.get(id) || id)).join(' + ')}</p><progress class="research-progress" value="${pct}" max="100">${pct}%</progress><p class="quiet-note">${pct >= 100 ? `Awaiting materials: ${Object.entries(f.cost).map(([key, value]) => `${decimal(value)} ${escape(key)}`).join(', ')}` : `${decimal(f.progress)} of ${number(f.required)} research`}</p><div class="effect-list">${effectLine(f.effects)}</div></article>`;
+  }).join('');
+  const made = shown.slice(0, 80).map(entry => `<article class="idea-card"><div class="idea-meta"><span>${escape(title(entry.field))} · depth ${number(entry.depth)}</span><span>${calendar(entry.day)}</span></div><h3>${escape(entry.name)}</h3><p class="recipe-line">From ${entry.parents.map(id => escape(names.get(id) || id)).join(' + ')}</p><p class="idea-description">${escape(entry.description)}</p><div class="effect-list">${effectLine(entry.effects)}</div><p class="quiet-note">First made by ${escape(entry.origin)} · held by ${number(held.get(entry.id) || 0)} ${held.get(entry.id) === 1 ? 'society' : 'societies'}</p></article>`).join('');
+  liveMarkup(content, list.length || frontier.length ? `${progress ? `<p class="industry-label">Research at the frontier</p><div class="idea-grid">${progress}</div>` : ''}<p class="industry-label">Breakthroughs${shown.length > 80 ? ' · newest 80' : ''}</p><div class="idea-grid">${made || '<p class="quiet-note">None yet for this selection.</p>'}</div>` : '<div class="empty-state idea-empty"><span>✧</span>No breakthroughs yet.<br>Once a society has writing and engineering, its researchers push past the known technologies.</div>');
 }
 
 /** Annual output, output per person, the ten-year trend and a sparkline of the yearly record. */
@@ -435,6 +460,7 @@ function renderCivilization() {
     renderGeneratedIdeas(groups, people);
     return;
   }
+  if (civilizationTab === 'breakthroughs') { renderBreakthroughs(groups); return; }
   if (civilizationTab === 'knowledge') {
     const projects = groups.filter(group => group.civilization?.project);
     $('#civilization-summary').textContent = `${number(projects.length)} active ${projects.length === 1 ? 'project' : 'projects'} · ${number(snapshot.stats.researchCompleted)} discoveries completed worldwide`;

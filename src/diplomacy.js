@@ -6,6 +6,7 @@ import { claimFriction } from './expansion.js';
 import { startOutbreak, industry, contaminate } from './civilization.js';
 import { addWealth } from './economy.js';
 import { linkBetween, reachable } from './infrastructure.js';
+import { advances } from './breakthroughs.js';
 
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -105,7 +106,9 @@ function situation(sim, group, effects) {
   const walls = 1 + Math.min(2, group.civilization?.buildings.walls || 0) * .3;
   // Industrial armies: machine-made weapons, and railways that move troops and supplies.
   const modern = industry(group), arms = 1 + (modern.machines * .5) + (group.civilization?.stock.metal >= 2 && modern.machines ? .2 : 0) + (modern.reach > 1 ? .15 : 0);
-  return { members, adults, stress, power: Math.sqrt(adults.length) * effects.combat * supplies * (1 + tools) * (.7 + effects.solidarity * .6) * walls * arms };
+  // Weapons breakthroughs multiply what a people can bring to a fight.
+  const weapons = Math.max(.3, 1 + advances(group).combat * 2);
+  return { members, adults, stress, power: Math.sqrt(adults.length) * effects.combat * supplies * (1 + tools) * (.7 + effects.solidarity * .6) * walls * arms * weapons };
 }
 function setStatus(sim, r, status, a, b, reason) {
   r.status = status; r.since = sim.day; r.reason = reason;

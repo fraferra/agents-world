@@ -109,6 +109,8 @@ export function considerExpansion(sim, group, near, found) {
   const colonyCiv = colony.civilization;
   // Pioneers carry a fair share of stores and everything the society knows how to do.
   colonyCiv.technologies = [...civ.technologies];
+  colonyCiv.breakthroughs = [...(civ.breakthroughs || [])];
+  if (civ.advances) colonyCiv.advances = { ...civ.advances };
   for (const id of colonyCiv.technologies) colonyCiv.research[id] = civ.research[id];
   colonyCiv.ideas = [...civ.ideas]; colonyCiv.doctrine = civ.doctrine;
   for (const key of Object.keys(civ.stock)) { const moved = civ.stock[key] * share; civ.stock[key] -= moved; colonyCiv.stock[key] += moved; }
@@ -181,6 +183,8 @@ export function considerFission(sim, group, found) {
   const site = sim._landNear(group.x + Math.cos(angle) * range, group.y + Math.sin(angle) * range);
   const settlers = [...faction], share = settlers.length / n;
   const offshoot = found(site, settlers, group);
+  offshoot.civilization.breakthroughs = [...(group.civilization.breakthroughs || [])];
+  if (group.civilization.advances) offshoot.civilization.advances = { ...group.civilization.advances };
   offshoot.civilization.technologies = group.civilization.technologies.filter(id => settlers.some(agent => agent.knowledge.includes(id)) || group.civilization.technologies.length < 3);
   for (const id of offshoot.civilization.technologies) offshoot.civilization.research[id] = group.civilization.research[id];
   const food = group.food * share * .8, wood = group.wood * share * .8;
