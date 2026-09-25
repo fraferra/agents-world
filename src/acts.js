@@ -5,6 +5,13 @@
  * on the same days reproduces the same history.
  */
 import { feel, recordEpisode, rememberPlace, inspire } from './psyche.js';
+import { TECHNOLOGIES } from './civilization.js';
+import { proposeFrontier, adoptBreakthrough, breakthroughById, canPushFrontier } from './breakthroughs.js';
+import { foundCompany, SECTORS, ownsCompany } from './enterprise.js';
+import { callElection, proclaim, secede } from './polity.js';
+import { declare, overlordOf, establishKinship } from './diplomacy.js';
+import { reachable } from './infrastructure.js';
+import { initializeCulture } from './culture.js';
 
 export const PLAGUE_DAYS = 120, WINTER_DAYS = 90;
 
@@ -23,18 +30,41 @@ export const ACTS = Object.freeze([
   { id: 'wildfire', name: 'Wildfire', scope: 'region', icon: 'flame', toast: 'Fire sweeps the land.', description: 'Burns woodland and wild food, damages camps, and leaves fertile ash behind.' },
   { id: 'flood', name: 'Flood', scope: 'region', icon: 'wave', toast: 'The waters rise.', description: 'Drowns crops and stores in low-lying land, then leaves rich silt in the soil.' },
   { id: 'strike', name: 'Mineral strike', scope: 'region', icon: 'gem', toast: 'A rich deposit is revealed.', description: 'Rich stone and ore surface near the region; nearby people learn where.' },
+  { id: 'aid', name: 'Send aid', scope: 'society', icon: 'sprout', toast: 'Aid arrives.', description: 'Food, timber, stone, metal and cloth for the society.' },
+  { id: 'knowledge', name: 'Share knowledge', scope: 'society', icon: 'spark', toast: 'Knowledge is shared.', description: 'The next technology it could learn, or a breakthrough known elsewhere.' },
+  { id: 'visionary', name: 'Inspire a visionary', scope: 'society', icon: 'star', toast: 'A visionary emerges.', description: 'Its research leaps ahead, toward its next project or past the known.' },
+  { id: 'enterprise', name: 'Back an entrepreneur', scope: 'society', icon: 'people', toast: 'A venture is funded.', description: 'Its most ambitious member receives capital and founds a company.' },
+  { id: 'unrest', name: 'Stir unrest', scope: 'society', icon: 'flame', toast: 'Discontent spreads.', description: 'Anger and strain rise; the opposition gains, and revolution may follow.' },
+  { id: 'election', name: 'Call an election', scope: 'society', icon: 'eye', toast: 'The people vote.', description: 'A snap election among its parties.' },
+  { id: 'peace', name: 'Broker peace', scope: 'society', icon: 'leaf', toast: 'Peace is made.', description: 'Every war it is fighting ends in a truce.' },
+  { id: 'discord', name: 'Sow discord', scope: 'society', icon: 'quake', toast: 'Tempers flare.', description: 'It goes to war with its nearest rival.' },
+  { id: 'proclaim', name: 'Proclaim a nation', scope: 'society', icon: 'gem', toast: 'A nation is born.', description: 'It unites with its kin, allies and tributaries as a country.' },
+  { id: 'independence', name: 'Independence', scope: 'society', icon: 'wave', toast: 'Independence!', description: 'It leaves its country and throws off any overlord.' },
+  { id: 'settle', name: 'Found a settlement', scope: 'society', icon: 'people', toast: 'Settlers set out.', description: 'Volunteers found a colony in the chosen region.' },
 ]);
 const actById = new Map(ACTS.map(act => [act.id, act]));
 export const isRegionalAct = kind => actById.get(kind)?.scope === 'region';
+export const isSocietyAct = kind => actById.get(kind)?.scope === 'society';
 
 const clamp = (value, low = 0, high = 1) => Math.min(high, Math.max(low, value));
 const foodCapacity = terrain => terrain === 'forest' ? 1 : terrain === 'grass' ? 0.8 : terrain === 'sand' ? 0.17 : terrain === 'mountain' ? 0.07 : 0;
 
 /** Applies an act. `region` is a region ID for regional acts; omitted, fate picks one. */
-export function performAct(sim, kind, { region = null } = {}) {
+export function performAct(sim, kind, { region = null, society = null } = {}) {
   const act = actById.get(kind);
   if (!act) throw new Error(`Unknown act. Choose one of: ${ACTS.map(entry => entry.id).join(', ')}.`);
   let place = null;
+  if (act.scope === 'society') {
+    const group = sim._groupMap.get(society);
+    if (!group) throw new Error('Choose a society.');
+    if (region !== null && region !== undefined) {
+      place = sim.regions.find(candidate => candidate.id === region);
+      if (!place) throw new Error('Unknown region.');
+    }
+    societyHandlers[kind](sim, group, place);
+    return;
+  }
+  if (society !== null && society !== undefined) throw new Error(`${act.name} does not act on one society.`);
   if (act.scope === 'region') {
     if (region !== null && region !== undefined) {
       place = sim.regions.find(candidate => candidate.id === region);
@@ -235,6 +265,100 @@ const handlers = {
 };
 
 /** Ongoing effects on one person each day: plague and cold. */
+const adultsOf = (sim, group) => group.members.map(id => sim._agentMap.get(id)).filter(agent => agent && agent.age >= 16);
+
+// ——— acts upon one society ———
+const societyHandlers = {
+  aid(sim, group) {
+    const n = group.members.length, stock = group.civilization.stock;
+    group.food += n * 3; group.wood += 10;
+    stock.stone += 6; stock.metal += 4; stock.cloth += 3; stock.tools += 3;
+    remember(sim, adultsOf(sim, group), { type: 'community', text: 'Aid arrived from beyond: food and materials for all.', valence: .7, salience: .6 }, { joy: .3 });
+    sim._event('world', `Aid arrives in ${group.name}: food, timber, stone, metal and cloth.`, { groupId: group.id });
+  },
+  knowledge(sim, group) {
+    const civ = group.civilization;
+    const next = TECHNOLOGIES.filter(tech => !civ.technologies.includes(tech.id) && tech.requires.every(id => civ.technologies.includes(id))).sort((a, b) => a.cost - b.cost)[0];
+    if (next) {
+      civ.technologies.push(next.id); civ.research[next.id] = next.cost;
+      if (civ.project?.technology === next.id) civ.project = null;
+      for (const agent of adultsOf(sim, group)) if (!agent.knowledge.includes(next.id) && sim._random() < .6) agent.knowledge.push(next.id);
+      sim._event('technology', `${group.name} is given the knowledge of ${next.name.toLowerCase()}. ${next.description}`, { groupId: group.id });
+      return;
+    }
+    const known = new Set([...civ.technologies, ...(civ.breakthroughs || [])]);
+    const elsewhere = (sim.breakthroughs?.list || []).find(entry => !known.has(entry.id) && entry.parents.every(parent => known.has(parent)));
+    if (elsewhere) { adoptBreakthrough(sim, group, breakthroughById(sim, elsewhere.id)); sim._event('technology', `${group.name} is given the secret of ${elsewhere.name}.`, { groupId: group.id }); }
+    else sim._event('world', `${group.name} already knows all it can yet understand.`, { groupId: group.id });
+  },
+  visionary(sim, group) {
+    const civ = group.civilization;
+    if (civ.project) civ.project.progress = Math.min(civ.project.required, civ.project.progress + civ.project.required * .6), civ.research[civ.project.technology] = civ.project.progress;
+    else if (canPushFrontier(group)) { civ.frontier ||= proposeFrontier(sim, group); if (civ.frontier) civ.frontier.progress = Math.min(civ.frontier.required, civ.frontier.progress + civ.frontier.required * .6); }
+    const thinker = adultsOf(sim, group).sort((a, b) => b.traits.curiosity - a.traits.curiosity)[0];
+    if (thinker) { thinker.skills.scholarship = Math.min(100, thinker.skills.scholarship + 20); inspire(sim, thinker); }
+    sim._event('world', `A visionary in ${group.name}${thinker ? `, ${thinker.name},` : ''} carries its research far ahead.`, { groupId: group.id, ...(thinker ? { agentId: thinker.id } : {}) });
+  },
+  enterprise(sim, group) {
+    const civ = group.civilization;
+    const founder = adultsOf(sim, group).filter(agent => !ownsCompany(sim, agent)).sort((a, b) => b.mind.ambition - a.mind.ambition)[0];
+    if (!founder) return;
+    const sectors = Object.entries(SECTORS).filter(([, sector]) => civ.technologies.includes(sector.technology) && (!sector.building || civ.buildings[sector.building] > 0));
+    const [sector] = sectors.length ? sectors[Math.floor(sim._random() * sectors.length)] : ['agriculture'];
+    foundCompany(sim, founder, group, sector, 40);
+  },
+  unrest(sim, group) {
+    for (const agent of adultsOf(sim, group)) { agent._stress = Math.min(200, (agent._stress || 0) + 60); feel(agent, 'anger', .5); }
+    group.civilization.culture && (group.civilization.culture.norms.hierarchy = Math.max(0, group.civilization.culture.norms.hierarchy - .05));
+    sim._event('world', `Unrest spreads through ${group.name}.`, { groupId: group.id });
+  },
+  election(sim, group) {
+    if (!callElection(sim, group)) sim._event('world', `${group.name} has no parties to vote for yet.`, { groupId: group.id });
+  },
+  peace(sim, group) {
+    let made = 0;
+    for (const r of [...(sim.diplomacy?.relations || [])]) {
+      if (r.status !== 'war' || (r.a !== group.id && r.b !== group.id)) continue;
+      const other = sim._groupMap.get(r.a === group.id ? r.b : r.a);
+      if (other) { declare(sim, group, other, 'truce', 'A peace is brokered from beyond.'); made++; }
+    }
+    if (!made) sim._event('world', `${group.name} is at peace already.`, { groupId: group.id });
+  },
+  discord(sim, group) {
+    const rival = sim.groups.filter(other => other !== group && reachable(sim, group, other)).sort((a, b) => Math.hypot(a.x - group.x, a.y - group.y) - Math.hypot(b.x - group.x, b.y - group.y))[0];
+    if (rival) declare(sim, group, rival, 'war', 'Old grievances flare into open war.');
+  },
+  proclaim(sim, group) { proclaim(sim, group); },
+  independence(sim, group) {
+    const lord = overlordOf(sim, group);
+    if (lord) declare(sim, group, lord, 'truce', `${group.name} throws off the rule of ${lord.name}.`);
+    if (!secede(sim, group) && !lord) sim._event('world', `${group.name} is already independent.`, { groupId: group.id });
+  },
+  settle(sim, group, place) {
+    const target = place || sim.regions[Math.floor(sim._random() * sim.regions.length)];
+    const site = sim._landNear(target.x, target.y);
+    const volunteers = adultsOf(sim, group).filter(agent => agent.age < 50 && agent.id !== group.civilization.culture?.leaderId).sort((a, b) => (b.psyche?.expansion ?? 0) - (a.psyche?.expansion ?? 0)).slice(0, Math.max(3, Math.min(8, Math.floor(group.members.length / 3))));
+    if (volunteers.length < 3) { sim._event('world', `${group.name} has too few people to spare for a settlement.`, { groupId: group.id }); return; }
+    const settlers = new Set(volunteers);
+    for (const agent of volunteers) {
+      const partner = sim._agentMap.get(agent.partnerId);
+      if (partner?.groupId === group.id) settlers.add(partner);
+      for (const id of agent.children) { const child = sim._agentMap.get(id); if (child?.groupId === group.id && child.age < 14) settlers.add(child); }
+    }
+    const colony = sim._foundColony(site, [...settlers]);
+    colony.civilization.technologies = [...group.civilization.technologies];
+    for (const id of colony.civilization.technologies) colony.civilization.research[id] = group.civilization.research[id];
+    colony.civilization.breakthroughs = [...(group.civilization.breakthroughs || [])];
+    if (group.civilization.advances) colony.civilization.advances = { ...group.civilization.advances };
+    const food = group.food * .25, wood = group.wood * .25;
+    group.food -= food; colony.food += food; group.wood -= wood; colony.wood += wood;
+    if (group.civilization.culture) initializeCulture(sim, colony, group);
+    establishKinship(sim, group, colony);
+    for (const agent of settlers) { agent._wanderX = site.x; agent._wanderY = site.y; }
+    sim._event('migration', `Settlers from ${group.name} set out to found ${colony.name} in ${target.name} (${settlers.size} people).`, { groupId: colony.id });
+  },
+};
+
 export function endureConditions(sim, agent, group) {
   const weather = sim.weather;
   if (weather.plagueUntil > sim.day && agent.health > 0) {

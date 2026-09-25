@@ -72,8 +72,15 @@ self.onmessage = ({ data: { id, type, payload = {} } }) => {
         publish();
         break;
       case 'intervene':
-        simulation.intervene(payload.kind, payload.region === undefined || payload.region === null ? {} : { region: payload.region });
+        simulation.intervene(payload.kind, { ...(payload.region === undefined || payload.region === null ? {} : { region: payload.region }), ...(payload.society === undefined || payload.society === null ? {} : { society: payload.society }) });
         publish({ tiles: true });
+        break;
+      case 'command':
+        // Directing the person in the observer's charge; their details are sent with each update.
+        if (!simulation) throw new Error('The world is still loading.');
+        result = simulation.command(payload);
+        if (payload.type === 'possess') detailId = payload.id;
+        publish();
         break;
       case 'inspect':
         detailId = Number.isSafeInteger(payload.id) ? payload.id : null;

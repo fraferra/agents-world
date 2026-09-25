@@ -68,7 +68,8 @@ function roundedRect(ctx, x, y, width, height, radius) {
 }
 
 export class WorldView {
-  constructor(canvas, { onSelect = () => {}, onHover = () => {} } = {}) {
+  constructor(canvas, { onSelect = () => {}, onHover = () => {}, onGround = null } = {}) {
+    this.onGround = onGround;
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.onSelect = onSelect;
@@ -271,6 +272,8 @@ export class WorldView {
       if (!pointer.moved && !cancelled) {
         const point = this.eventPoint(event);
         const agent = this.nearestAgent(point.x, point.y);
+        // With someone in your charge, a click on open ground is where they should go.
+        if (!agent && this.onGround?.(this.toWorld(point.x, point.y))) { this.canvas.style.cursor = 'grab'; return; }
         this.selectedId = agent?.id ?? null;
         this.onSelect(this.selectedId);
         this.setHovered(agent);
@@ -523,6 +526,43 @@ export class WorldView {
     this.developmentCanvas = canvas;
   }
 
+  /**
+   * Harbour life: a coastal town's boats working its waters. Fishing craft stay
+   * close in; a port's sailing ships or steamships ply farther out. Their number
+   * and kind come from the town's fisheries, port and technology.
+   */
+  drawHarbours(ctx, time) {
+    const { width, height, tiles } = this.snapshot;
+    this.harbourWaters ||= new Map();
+    for (const group of this.snapshot.groups) {
+      const civ = group.civilization, b = civ?.buildings;
+      if (!b || !civ.technologies.includes('fishing') || !this.visible(group.x, group.y, 16)) continue;
+      const key = `${group.id}:${Math.floor(group.x)}:${Math.floor(group.y)}`;
+      let waters = this.harbourWaters.get(key);
+      if (!waters) {
+        waters = [];
+        for (let dy = -9; dy <= 9; dy++) for (let dx = -9; dx <= 9; dx++) {
+          const x = Math.floor(group.x) + dx, y = Math.floor(group.y) + dy;
+          if (x < 0 || y < 0 || x >= width || y >= height || tiles[y * width + x]?.terrain !== 'water') continue;
+          waters.push({ x: x + 0.5, y: y + 0.5, d: Math.hypot(dx, dy) });
+        }
+        waters.sort((a, b) => a.d - b.d);
+        this.harbourWaters.set(key, waters);
+      }
+      if (waters.length < 6) continue;
+      const vessel = seafaring(group).kind;
+      const fleet = Math.min(7, (b.fishery || 0) + (b.dock || 0) * 2 + 1);
+      for (let i = 0; i < fleet; i++) {
+        const far = vessel !== 'canoe' && i % 2 === 1;
+        const pool = far ? waters.slice(Math.floor(waters.length / 3)) : waters.slice(0, Math.max(6, Math.floor(waters.length / 3)));
+        const a = pool[(i * 7 + group.id) % pool.length], c = pool[(i * 13 + group.id * 3 + 5) % pool.length];
+        const t = (Math.sin(time / 1000 * (far ? 0.08 : 0.12) + i * 1.7 + group.id) + 1) / 2;
+        const x = a.x + (c.x - a.x) * t, y = a.y + (c.y - a.y) * t;
+        this.drawVessel(ctx, { groupId: group.id, id: group.id * 31 + i, kind: far ? vessel : 'canoe' }, x, y, time);
+      }
+    }
+  }
+
   /** Roads and railways between the settlements they join. */
   drawRoutes(ctx) {
     const groups = this.groups;
@@ -744,11 +784,13 @@ export class WorldView {
 
   /** Someone at sea: a canoe, a sailing ship, a steamship or an aircraft, as their society has. */
   drawVessel(ctx, agent, x, y, time) {
-    const kind = seafaring(this.groups.get(agent.groupId)).kind || 'canoe';
+    const kind = agent.kind || seafaring(this.groups.get(agent.groupId)).kind || 'canoe';
     const color = this.groups.get(agent.groupId)?.color || '#e3ce9b';
     const bob = Math.sin(time * 0.004 + agent.id) * 0.04;
     ctx.save();
     ctx.translate(x, y + bob);
+    // Ocean-going ships are drawn larger than canoes so they read at a distance.
+    if (kind === 'ship' || kind === 'steamship') ctx.scale(1.6, 1.6);
     if (kind === 'aircraft') {
       ctx.fillStyle = '#e8ecef'; ctx.strokeStyle = '#6f7b83'; ctx.lineWidth = 0.05;
       ctx.beginPath(); ctx.moveTo(-0.6, 0); ctx.lineTo(0.6, 0); ctx.lineTo(0.7, -0.08); ctx.lineTo(-0.5, -0.1); ctx.closePath(); ctx.fill(); ctx.stroke();
@@ -1215,6 +1257,7 @@ export class WorldView {
     }
     this.drawRegionLabels(ctx);
     this.drawRoutes(ctx);
+    this.drawHarbours(ctx, time);
     if (this.overlay === 'relations') this.drawRelations(ctx);
     for (const group of this.snapshot.groups) {
       if (this.visible(group.x, group.y, 18)) this.drawSettlement(ctx, group, time);

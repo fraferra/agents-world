@@ -601,6 +601,57 @@ function surviveByFarming(sim, agent, group, youngChildren) {
   return true;
 }
 
+const WORK_LABELS = { farm: 'Farm the fields', research: 'Research', invent: 'Experiment and invent', reflect: 'Reflect with others', study: 'Study', teach: 'Teach someone', build: 'Build', craft: 'Make tools',
+  pottery: 'Fire pottery', smelt: 'Smelt metal', bricks: 'Fire bricks', weave: 'Weave cloth', remedy: 'Prepare remedies', herd: 'Tend herds', manufacture: 'Work the factory', assemble: 'Assemble electronics',
+  heal: 'Care for the sick', trade: 'Trade with a neighbour', lumber: 'Cut timber', quarry: 'Quarry stone', mine: 'Mine ore', dig: 'Dig clay', reap: 'Gather fiber', herb: 'Gather herbs', prospect: 'Prospect for gems',
+  colliery: 'Mine coal', uranium: 'Mine uranium', hunt: 'Hunt', fish: 'Fish', pioneer: 'Scout distant land' };
+
+/**
+ * The work open to a person in their society today, for someone directing them:
+ * each entry names the action and, where it has one, what it acts on.
+ */
+export function availableWork(sim, agent, group) {
+  if (!group?.civilization) return [];
+  const civ = group.civilization, b = civ.buildings, known = civ.technologies, work = [];
+  const offer = (action, target = null, detail = '') => work.push({ action, target, label: WORK_LABELS[action] + (detail ? ` (${detail})` : '') });
+  if (b.farm) offer('farm');
+  if (civ.project) offer('research', null, techById.get(civ.project.technology).name.toLowerCase());
+  else if (civ.frontier) offer('research', null, civ.frontier.name.toLowerCase());
+  offer('invent'); offer('reflect'); offer('study');
+  const building = desiredBuilding(sim, group);
+  if (building && Object.entries(BUILDINGS[building].cost).every(([key, value]) => have(group, key) >= value)) offer('build', building, BUILDINGS[building].name.toLowerCase());
+  if (b.workshop) offer('craft'); if (b.kiln) offer('pottery'); if (b.forge) offer('smelt');
+  if (b.kiln && known.includes('brickmaking')) offer('bricks'); if (b.loom) offer('weave'); if (b.apothecary) offer('remedy'); if (b.pasture) offer('herd');
+  if (b.factory) offer('manufacture'); if (b.factory && known.includes('electricity')) offer('assemble');
+  const neighbors = sim._neighbors(agent, 7);
+  const patient = known.includes('medicine') ? neighbors.filter(other => other.health < 80).sort((x, y) => x.health - y.health)[0] : null;
+  if (patient) offer('heal', patient.id, patient.name);
+  const student = neighbors.find(other => other.age >= 5 && SKILLS.some(skill => agent.skills[skill] - other.skills[skill] > 10));
+  if (student) offer('teach', student.id, student.name);
+  const partner = sim.groups.find(other => other.id !== group.id && other.civilization && tradeAccess(sim, group, other) && exchangePair(group, other));
+  if (partner) offer('trade', partner.id, partner.name);
+  for (const [material, { action }] of Object.entries(GATHERING)) if (material !== 'uranium' || known.includes('fission')) if (material !== 'coal' || known.includes('steam')) offer(action);
+  offer('hunt'); offer('fish'); offer('pioneer');
+  return work;
+}
+
+/** Performs one day of the chosen work for a directed person. Returns false if it cannot be done. */
+export function performWork(sim, agent, group, action, target = null) {
+  const job = availableWork(sim, agent, group).find(entry => entry.action === action && (target === null || entry.target === target || entry.target === null));
+  if (!job) return false;
+  if (['research', 'invent', 'reflect', 'study', 'build', 'farm', 'craft', 'pottery', 'smelt', 'bricks', 'weave', 'remedy', 'herd', 'manufacture', 'assemble'].includes(action) && distance(agent, group) >= 9) {
+    sim._move(agent, group); agent.action = 'heading to work'; return true;
+  }
+  if (action === 'pioneer') { scout(sim, agent, group); return true; }
+  outcome = null;
+  if (sim._civilAssignments?.day !== sim.day) sim._civilAssignments = { day: sim.day, farms: new Map() };
+  execute(sim, agent, group, { action, target: job.target, steps: [] });
+  if (outcome !== null) reinforce(sim, agent, action, outcome);
+  if (action === 'farm') sim._civilAssignments.farms.set(group.id, (sim._civilAssignments.farms.get(group.id) || 0) + 1);
+  agent.mind.policy = { action, reason: 'Directed from beyond.', scores: [], since: agent.mind.policy.action === action ? agent.mind.policy.since : sim.day };
+  return true;
+}
+
 /** Called before basic behavior. Basic survival retains absolute priority. */
 export function considerCivilization(sim, agent, group) {
   const mind = agent.mind || initializeMind(sim, agent).mind;

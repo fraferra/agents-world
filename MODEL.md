@@ -125,6 +125,24 @@ Industry also moves culture. Factories and railways raise innovation, trade and 
 
 **Countries.** Once a year, societies unite into named states: an overlord with two or more tributaries (an empire), a city with its colonies or allies (a kingdom or republic, by its hierarchy), or a town with two or more allied kin societies (a union or confederation). Allies, colonies and tributaries of a capital join over time. Members of a country do not go to war with each other. A member at war with the capital breaks away, a country whose other members have gone dissolves, and one that loses its capital falls apart. Countries share a colour on the Societies view and their names are written across their lands.
 
+## Farming, growth and expansion
+
+**Farming.** A society caps its daily experimenters (about 15% of members) and scouts (about 8%). Farming is a duty: until enough people are in the fields to feed everyone at what a farm day yields with the society's methods, farming outranks other work. Hungry people in a farming band fill that quota themselves and keep up to half their harvest. A band that knows cultivation builds its first field even while hungry. Once societies farm, crops supply most of their food.
+
+**The demographic transition.** Natural fertility falls as children reliably survive (medical care), schooling, wealth and modern institutions spread: up to 70% of it forgone in the most modern societies. Breakthroughs can raise or lower fertility only within limits.
+
+**Expansion.** Development (tier, statehood, governance, railways, ports, airports, breakthroughs) drives colonisation rather than rooting a society, and shortens the time between colonies. A society's territory grows with its works and industry. Countries absorb the colonies of any member and small, friendly neighbours near their lands by treaty.
+
+**Harbours.** Coastal towns that know fishing show their boats working nearby waters; a port's ships (steamships once they have steam) ply farther out, and ports on the same coast open coastal sea routes.
+
+## Taking charge
+
+The observer may take charge of one adult (`src/player.js`). Each day that person follows a standing order instead of their own judgement: walk or sail to a place; do any work their society supports; forage, rest or explore; seek someone out to talk with, court (marriage follows the usual rules of attraction, age and kinship) or give food to; or travel to join a society. Leaving a society and founding a society, a company (with commerce and some wealth) or a party (in an organised society) happen at once. An exhausted person rests whatever the order. They still eat, tire, age and can die, which ends your charge; the choice and order are saved with the world.
+
+## Acts upon a society
+
+Besides acts upon the whole world or a region, the observer can act upon one society: send aid (food, timber, stone, metal, cloth); share knowledge (the next technology it could learn, or a breakthrough known elsewhere); inspire a visionary (research leaps ahead); back an entrepreneur (its most ambitious member founds a company); stir unrest; call a snap election; broker peace in all its wars; sow discord with its nearest rival; proclaim a nation with its kin, allies and tributaries; grant independence from its country or overlord; or send settlers to found a colony in a chosen region.
+
 ## Culture
 
 Every society has eight norms (`src/culture.js`): innovation, tradition, collectivism, hierarchy, martial spirit, trade, piety and expansion. Each month they drift toward targets set by:

@@ -102,6 +102,11 @@ function calendar(day) { return `Year ${number(Math.floor(day / DAYS) + 1)} · D
 
 const view = new WorldView($('#world-canvas'), {
   onSelect: id => selectAgent(id),
+  onGround: point => {
+    if (!snapshot?.player?.id) return false;
+    order({ kind: 'move', x: point.x, y: point.y });
+    return true;
+  },
   onHover: agent => {
     const tooltip = $('#map-tooltip');
     tooltip.hidden = !agent;
@@ -149,6 +154,7 @@ worker.onmessage = ({ data }) => {
     running = data.running;
     speed = data.speed;
     view.setSnapshot(snapshot);
+    renderPlayer();
     render();
   } else if (data.type === 'fatal') {
     running = false;
@@ -199,6 +205,13 @@ function render() {
   const badge = $('#condition-badge');
   badge.hidden = !conditions.length;
   badge.textContent = conditions.map(([name, days]) => `${{ rain: 'RAIN', drought: 'DROUGHT', winter: 'WINTER', plague: 'PLAGUE' }[name]} ${days}D`).join(' · ');
+  const societySelect = $('#act-society'), societyKey = snapshot.groups.map(group => `${group.id}:${group.name}`).join(',');
+  if (societySelect.dataset.groups !== societyKey && document.activeElement !== societySelect) {
+    const current = societySelect.value;
+    societySelect.innerHTML = '<option value="">Choose a society</option>' + [...snapshot.groups].sort((a, b) => b.members.length - a.members.length).map(group => `<option value="${group.id}">${escape(group.name)} · ${group.members.length}</option>`).join('');
+    societySelect.value = snapshot.groups.some(group => String(group.id) === current) ? current : '';
+    societySelect.dataset.groups = societyKey;
+  }
   const regionSelect = $('#act-region'), regionKey = (snapshot.regions || []).map(region => region.id).join(',');
   if (regionSelect.dataset.regions !== regionKey && document.activeElement !== regionSelect) {
     const current = regionSelect.value;
@@ -307,6 +320,52 @@ function economyMarkup(group) {
   const years = Math.min(10, history.length - 1);
   return `<div class="economy-line"><div><strong>${number(economy.output)}</strong><span>a year · ${decimal(economy.output / Math.max(1, group.members.length))} per person${years ? ` · ${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))}% over ${number(years)} ${years === 1 ? 'year' : 'years'}` : ''}</span></div><svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Yearly output"><polyline points="${points}" fill="none" stroke="${change >= 0 ? '#7f9d5f' : '#b27a5c'}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>`;
 }
+
+// ——— the person in your charge ———
+const playerPanel = document.createElement('aside');
+playerPanel.className = 'player-panel'; playerPanel.hidden = true; playerPanel.setAttribute('aria-label', 'The person in your charge');
+$('#world-canvas').parentElement.append(playerPanel);
+function order(payload) {
+  return request('command', { type: 'order', ...payload }).then(message => { if (message) toast(message, 2500); }).catch(report);
+}
+let playerKey = '';
+function renderPlayer() {
+  const info = snapshot?.player, agent = info?.id ? snapshot.agents.find(person => person.id === info.id) : null;
+  playerPanel.hidden = !agent;
+  if (!agent) { playerKey = ''; return; }
+  const group = snapshot.groups.find(entry => entry.id === agent.groupId);
+  const orderText = info.order ? { move: 'travelling', work: `working (${info.order.action})`, forage: 'foraging', rest: 'resting', explore: 'exploring', talk: 'going to talk', court: 'courting', give: 'taking food', join: 'going to join a society' }[info.order.kind] : 'awaiting your direction';
+  const bars = [['Health', agent.health], ['Fed', 100 - agent.hunger], ['Energy', agent.energy]].map(([name, value]) => `<div class="need-row"><span>${name}</span><span class="meter"><i style="width:${percent(value)}%;background:${value < 30 ? '#be9a79' : '#a4b581'}"></i></span><span>${number(value)}</span></div>`).join('');
+  const key = JSON.stringify([info.work.map(entry => entry.label), info.nearby.map(person => [person.id, person.eligible]), info.societies.map(entry => entry.id), agent.groupId, info.canFoundCompany, info.canFoundParty]);
+  if (key !== playerKey) {
+    playerKey = key;
+    playerPanel.innerHTML = `<div class="player-head"><strong class="player-name"></strong><button class="icon-btn" data-player-release aria-label="Release">×</button></div><p class="player-status"></p><div class="player-bars"></div>
+      <p class="player-hint">Click the map to go there · arrow keys or WASD to move</p>
+      <div class="player-actions"><button data-order="rest">Rest</button><button data-order="forage">Forage</button><button data-order="explore">Explore</button></div>
+      ${info.work.length ? `<label class="player-label">Work<select data-work>${info.work.map(entry => `<option value="${escape(entry.action)}">${escape(entry.label)}</option>`).join('')}</select></label><button class="button secondary" data-order="work">Do this work</button>` : ''}
+      <p class="player-label">People nearby</p><div class="player-people">${info.nearby.length ? info.nearby.map(person => `<div><span>${escape(person.name)} · ${number(person.age)}</span><span><button data-order="talk" data-target="${person.id}">Talk</button><button data-order="give" data-target="${person.id}">Give food</button>${person.eligible ? `<button data-order="court" data-target="${person.id}">Court</button>` : ''}</span></div>`).join('') : '<span class="quiet-note">No one within reach.</span>'}</div>
+      <p class="player-label">Society</p><div class="player-actions">${agent.groupId ? '<button data-order="leave">Leave</button>' : ''}<button data-order="found-society">Found a society</button>${info.canFoundCompany ? '<button data-order="found-company">Found a company</button>' : ''}${info.canFoundParty ? '<button data-order="found-party">Found a party</button>' : ''}</div>
+      ${info.societies.length ? `<div class="player-people">${info.societies.map(entry => `<div><span>${escape(entry.name)} · ${number(entry.members)}</span><button data-order="join" data-target="${entry.id}">Join</button></div>`).join('')}</div>` : ''}`;
+  }
+  playerPanel.querySelector('.player-name').textContent = `${agent.name} · ${agent.mind?.role || ''}`;
+  playerPanel.querySelector('.player-status').textContent = `${Math.floor(agent.age)} years · ${group ? group.name : 'no society'} · ${orderText}`;
+  playerPanel.querySelector('.player-bars').innerHTML = bars;
+}
+playerPanel.addEventListener('click', event => {
+  if (event.target.closest('[data-player-release]')) { request('command', { type: 'release' }).then(toast).catch(report); return; }
+  const button = event.target.closest('[data-order]');
+  if (!button) return;
+  const kind = button.dataset.order, target = button.dataset.target ? Number(button.dataset.target) : undefined;
+  order({ kind, ...(target !== undefined ? { target } : {}), ...(kind === 'work' ? { action: playerPanel.querySelector('[data-work]').value } : {}) });
+});
+document.addEventListener('keydown', event => {
+  if (!snapshot?.player?.id || event.target.closest?.('input, select, textarea') || event.metaKey || event.ctrlKey) return;
+  const step = { ArrowUp: [0, -6], KeyW: [0, -6], ArrowDown: [0, 6], KeyS: [0, 6], ArrowLeft: [-6, 0], KeyA: [-6, 0], ArrowRight: [6, 0], KeyD: [6, 0] }[event.code];
+  const agent = snapshot.agents.find(person => person.id === snapshot.player.id);
+  if (!step || !agent) return;
+  event.preventDefault();
+  order({ kind: 'move', x: agent.x + step[0], y: agent.y + step[1] });
+});
 
 /** " · part of X · governed by Y" for a society row. */
 function politicsMarkup(group) {
@@ -569,7 +628,7 @@ function renderIndividual() {
   const parents = agent.parentIds.map(id => snapshot.agents.find(a => a.id === id)?.name || `Ancestor #${id}`);
   // Mount disclosure controls once per selected person, keeping focus and open state.
   if (panel.dataset.agentId !== String(selectedId) || !panel.querySelector('.inspector-body')) {
-    panel.innerHTML = `<div class="inspector-heading"><span>AN INDIVIDUAL LIFE</span><button class="icon-btn" data-dismiss-person aria-label="Close individual">×</button></div><div class="inspector-body"><div class="person-title"></div><p class="activity"></p><blockquote class="mind-thought"></blockquote><div class="needs-list"></div><div class="traits"></div><div class="mind-goal"></div><details class="mind-section" open><summary>Inside this decision</summary><div class="mind-policy"></div></details><details class="mind-section"><summary>Temperament &amp; mood</summary><div class="mind-temperament"></div></details><details class="mind-section" open><summary>Skills, techniques &amp; discoveries</summary><div class="mind-skills"></div><div class="mind-techniques"></div><div class="mind-ideas"></div></details><details class="mind-section"><summary>Experience &amp; preferences</summary><div class="mind-experience"></div></details><details class="mind-section"><summary>People they know</summary><div class="mind-people"></div></details><details class="mind-section"><summary>Values, beliefs &amp; desires</summary><div class="mind-values"></div><div class="mind-beliefs"></div><div class="mind-convictions"></div></details><details class="mind-section"><summary>Memories</summary><div class="mind-memories"></div></details><div class="person-family"></div><button class="button secondary follow-button" id="follow-btn"></button></div>`;
+    panel.innerHTML = `<div class="inspector-heading"><span>AN INDIVIDUAL LIFE</span><button class="icon-btn" data-dismiss-person aria-label="Close individual">×</button></div><div class="inspector-body"><div class="person-title"></div><p class="activity"></p><blockquote class="mind-thought"></blockquote><div class="needs-list"></div><div class="traits"></div><div class="mind-goal"></div><details class="mind-section" open><summary>Inside this decision</summary><div class="mind-policy"></div></details><details class="mind-section"><summary>Temperament &amp; mood</summary><div class="mind-temperament"></div></details><details class="mind-section" open><summary>Skills, techniques &amp; discoveries</summary><div class="mind-skills"></div><div class="mind-techniques"></div><div class="mind-ideas"></div></details><details class="mind-section"><summary>Experience &amp; preferences</summary><div class="mind-experience"></div></details><details class="mind-section"><summary>People they know</summary><div class="mind-people"></div></details><details class="mind-section"><summary>Values, beliefs &amp; desires</summary><div class="mind-values"></div><div class="mind-beliefs"></div><div class="mind-convictions"></div></details><details class="mind-section"><summary>Memories</summary><div class="mind-memories"></div></details><div class="person-family"></div><button class="button secondary follow-button" id="follow-btn"></button><button class="button primary follow-button" id="possess-btn"></button></div>`;
     panel.dataset.agentId = String(selectedId);
   }
   const update = (selector, markup) => liveMarkup(panel.querySelector(selector), markup);
@@ -608,6 +667,9 @@ function renderIndividual() {
   update('.mind-memories', `<p class="inspector-label">Formative memories · most vivid first</p>${formative.length ? formative.map(episode => `<article class="mind-memory episode ${episode.valence > .2 ? 'warm' : episode.valence < -.2 ? 'painful' : ''}"><p>${escape(episode.text)}</p><time>${calendar(episode.day)} · ${escape(title(episode.type))} · ${episode.salience > .6 ? 'vivid' : episode.salience > .3 ? 'clear' : 'fading'}</time></article>`).join('') : '<p class="quiet-note">Nothing has left a lasting mark yet.</p>'}<p class="inspector-label">Recent moments</p>${mind.memories?.length ? [...mind.memories].sort((a, b) => b.day - a.day).map(memory => `<article class="mind-memory"><p>${escape(memory.text)}</p><time>${calendar(memory.day)} · ${escape(title(memory.type))}</time></article>`).join('') : '<p class="quiet-note">A life just beginning. Memories will appear here.</p>'}`);
   update('.person-family', `${partner ? `Partner: ${escape(partner.name)}` : 'No current partner'} · ${agent.children.length} children<br>${number(agent.inventory.food)} food · ${number(agent.inventory.wood)} wood${parents.length ? `<br>Parents: ${parents.map(escape).join(', ')}` : '<br>A founding individual'}`);
   panel.querySelector('#follow-btn').textContent = following ? 'Stop following' : 'Follow this life ↗';
+  const possess = panel.querySelector('#possess-btn');
+  possess.textContent = snapshot.player?.id === agent.id ? 'Let them live on their own' : 'Take charge of this life';
+  possess.hidden = agent.age < 12;
 }
 
 function renderChart() {
@@ -720,14 +782,17 @@ $$('[data-condition]').forEach(input => {
 const actButton = entry => `<button class="button secondary act-button" data-intervention="${entry.id}" title="${escape(entry.description)}"><span>${icon(entry.icon)}</span><strong>${escape(entry.name)}</strong><small>${escape(entry.description)}</small></button>`;
 $('#world-acts').innerHTML = ACTS.filter(entry => entry.scope === 'world').map(actButton).join('');
 $('#region-acts').innerHTML = ACTS.filter(entry => entry.scope === 'region').map(actButton).join('');
+$('#society-acts').innerHTML = ACTS.filter(entry => entry.scope === 'society').map(actButton).join('');
 $$('[data-intervention]').forEach(button => button.addEventListener('click', act(async () => {
   const entry = ACTS.find(candidate => candidate.id === button.dataset.intervention);
   const chosen = $('#act-region').value;
-  const region = entry.scope === 'region' && chosen ? Number(chosen) : null;
+  const region = (entry.scope === 'region' || entry.id === 'settle') && chosen ? Number(chosen) : null;
+  const society = entry.scope === 'society' ? Number($('#act-society').value) || null : null;
+  if (entry.scope === 'society' && !society) { toast('Choose a society first.'); return; }
   button.disabled = true;
   try {
-    await request('intervene', { kind: entry.id, region });
-    toast(`${entry.toast}${entry.scope === 'region' ? ` (${region ? (snapshot?.regions.find(candidate => candidate.id === region)?.name || 'chosen region') : 'fate chose the place'})` : ''}`);
+    await request('intervene', { kind: entry.id, region, society });
+    toast(`${entry.toast}${entry.scope === 'region' ? ` (${region ? (snapshot?.regions.find(candidate => candidate.id === region)?.name || 'chosen region') : 'fate chose the place'})` : entry.scope === 'society' ? ` (${escape(snapshot?.groups.find(group => group.id === society)?.name || 'the society')})` : ''}`);
     await saveLocal(true);
   } finally { button.disabled = false; }
 })));
@@ -815,6 +880,13 @@ document.addEventListener('click', event => {
     renderIndividual();
   }
   if (event.target.closest('#follow-btn')) { following = !following; view.setFollow(following ? selectedId : null); renderIndividual(); }
+  if (event.target.closest('#possess-btn')) {
+    const releasing = snapshot.player?.id === selectedId;
+    request('command', releasing ? { type: 'release' } : { type: 'possess', id: selectedId }).then(message => {
+      toast(message);
+      if (!releasing) { following = true; view.setFollow(selectedId); request('speed', { speed: 1 }).catch(report); }
+    }).catch(report);
+  }
 });
 document.addEventListener('keydown', act(async event => {
   if (event.code === 'Space' && !/INPUT|SELECT|TEXTAREA|BUTTON/.test(event.target.tagName) && !event.target.isContentEditable && !document.querySelector('dialog[open]')) {

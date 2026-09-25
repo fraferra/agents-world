@@ -12,7 +12,9 @@ test('every act is deterministic, recorded, and leaves a valid world', () => {
   for (const act of ACTS) {
     const a = world(), b = world();
     const before = a.events[0]?.id;
-    a.intervene(act.id); b.intervene(act.id);
+    // Acts upon one society target the largest.
+    const options = sim => act.scope === 'society' ? { society: [...sim.groups].sort((x, y) => y.members.length - x.members.length)[0].id } : {};
+    a.intervene(act.id, options(a)); b.intervene(act.id, options(b));
     assert.ok(a.events[0].id !== before, `${act.id} is recorded`);
     a.step(30); b.step(30);
     assert.deepEqual(a.serialize(), b.serialize(), `${act.id} replays identically`);

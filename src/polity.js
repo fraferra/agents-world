@@ -241,6 +241,17 @@ function countries(sim) {
   }
 }
 
+/** Founds a party led by `founder` with their own stance, if their society is organised for politics. */
+export function foundParty(sim, group, founder) {
+  const civ = group.civilization;
+  if (!(civ.technologies.includes('governance') || civ.buildings.hall > 0) || group.members.length < 12) return null;
+  const ideology = Object.fromEntries(Object.entries(stance(founder, group)).map(([key, value]) => [key, round(value)]));
+  const party = { id: `party-${sim.polity.nextParty++}`, name: partyName(sim, ideology, group), groupId: group.id, ideology, leaderId: founder.id, founded: sim.day, support: 1, share: round(1 / group.members.length), inPower: false, since: sim.day, wins: 0 };
+  sim.polity.parties.push(party);
+  sim._event('group', `${founder.name} founds the ${party.name} in ${group.name}.`, { groupId: group.id, agentId: founder.id });
+  return party;
+}
+
 /** Holds an election now, if the society has parties (used by acts of god). Returns the winner. */
 export function callElection(sim, group) {
   const current = partiesOf(sim, group);

@@ -103,7 +103,10 @@ export function plannedRoute(sim, group) {
   if (!canRail && !canRoad && !canSail) return null;
   for (const { other, range } of partners(sim, group)) {
     const existing = linkBetween(sim, group, other), overland = sameLand(sim, group, other);
+    // Ports on the same coast trade by sea too (coastal shipping), when no road or rail joins them.
+    const coastal = overland && canSail && other.civilization.buildings.dock > 0 && !existing && range > 12;
     const kind = canFly && other.civilization.buildings.airport > 0 && existing?.kind !== 'air' ? 'air'
+      : coastal && range <= Math.min(ROUTES.sea.range, voyage.reach) ? 'sea'
       : !overland ? (canSail && !existing && range <= Math.min(ROUTES.sea.range, voyage.reach) ? 'sea' : null)
         : canRail && range <= ROUTES.rail.range && existing?.kind !== 'rail' && existing?.kind !== 'air' ? 'rail'
           : canRoad && !existing && range <= ROUTES.road.range ? 'road' : null;
