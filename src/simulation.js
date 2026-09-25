@@ -1177,7 +1177,7 @@ export class Simulation {
     if (!Number.isInteger(days) || days < 0 || days > 100000) throw new Error('Advance must be a whole number of days between 0 and 100,000.');
     if (this.day + days > 1e9) throw new Error('This world has reached its supported time limit.');
     for (let tick = 0; tick < days; tick++) {
-      this.day++; this._ecology(); this._buildSpatial();
+      this.day++; this._tileSums = null; this._ecology(); this._buildSpatial();
       // Rotate iteration priority; no fixed individual always harvests first.
       const count = this.agents.length, offset = count ? this.day % count : 0;
       for (let i = 0; i < count; i++) {
@@ -1246,11 +1246,12 @@ export class Simulation {
   }
 
   /** Directs the person in the observer's charge (see src/player.js). Returns a short description. */
-  command(payload) { return playerCommand(this, payload); }
+  command(payload) { this._tileSums = null; return playerCommand(this, payload); }
 
   /** Acts of god (see src/acts.js). Regional acts accept `{ region: regionId }`. */
   intervene(kind, options = {}) {
     if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Act options must be an object.');
+    this._tileSums = null;
     performAct(this, kind, options);
     return this;
   }
@@ -1261,8 +1262,14 @@ export class Simulation {
   }
 
   _stats() {
-    let food = 0, growth = 0;
-    for (const tile of this.tiles) { food += tile.food; growth += growthRate(tile.terrain) * (0.7 + tile.fertility * 0.6); }
+    // Summing every tile is the costly part; it is kept until the land can next change
+    // (the next day, a command or an act), so repeated snapshots between days are cheap.
+    if (!this._tileSums) {
+      let tileFood = 0, tileGrowth = 0;
+      for (const tile of this.tiles) { tileFood += tile.food; tileGrowth += growthRate(tile.terrain) * (0.7 + tile.fertility * 0.6); }
+      this._tileSums = { food: tileFood, growth: tileGrowth };
+    }
+    let food = this._tileSums.food, growth = this._tileSums.growth;
     let happiness = 0, age = 0, generation = 0;
     for (const agent of this.agents) {
       food += agent.inventory.food; happiness += agent.happiness; age += agent.age; generation = Math.max(generation, agent.generation);
@@ -1324,7 +1331,12 @@ export class Simulation {
    * Generated ideas never change once recorded, so only those after
    * `discoveriesFrom` are sent. Tiles are sent separately (see packTiles).
    */
-  view({ detailId = null, discoveriesFrom = 0, breakthroughsFrom = 0 } = {}) {
+  /**
+   * A snapshot for display. `heldFrom` (a Map of society ID to how many of its breakthrough IDs the
+   * page already holds) lets a long-lived page receive only the new tail of each society's list,
+   * which only ever grows; without it, every list is sent whole.
+   */
+  view({ detailId = null, discoveriesFrom = 0, breakthroughsFrom = 0, heldFrom = null } = {}) {
     const { discoveries, ...innovation } = this.innovation;
     return {
       version: 7, seed: this.seed, day: this.day, width: this.width, height: this.height, config: { ...this.config },
@@ -1340,7 +1352,11 @@ export class Simulation {
         const { id, name, x, y, age, health, hunger, energy, social, happiness, groupId, partnerId, action, generation } = agent;
         const outward = { id, name, x, y, age, health, hunger, energy, social, happiness, sex: agent.sex, attraction: agent.attraction, wealth: agent.wealth, traits: { ...agent.traits }, inventory: { ...agent.inventory },
           groupId, partnerId, parentIds: [...agent.parentIds], children: [...agent.children], action, generation, afloat: agent._afloat === true, knowledge: [...agent.knowledge], convictions: { ...agent.convictions } };
-        if (agent.id !== detailId) return { ...outward, lite: true, ideaCount: agent.ideas.length, mind: { role: agent.mind.role }, psyche: { thought: agent.psyche?.thought, expansion: agent.psyche?.expansion } };
+        if (agent.id !== detailId) {
+          // A long-lived page gets technologies known and convictions held as per-society counts instead.
+          if (heldFrom) { delete outward.knowledge; delete outward.convictions; }
+          return { ...outward, lite: true, ideaCount: agent.ideas.length, mind: { role: agent.mind.role }, psyche: { thought: agent.psyche?.thought, expansion: agent.psyche?.expansion } };
+        }
         return { ...outward, ideas: [...agent.ideas], mind: structuredClone(agent.mind), skills: { ...agent.skills }, psyche: structuredClone(agent.psyche), relations: agent._relations.map((relation) => ({ ...relation })) };
       }),
       // How many people in each society (0 for none) hold each idea, instead of everyone's list.
@@ -1349,10 +1365,25 @@ export class Simulation {
         for (const id of agent.ideas) counts[id] = (counts[id] || 0) + 1;
         return holders;
       }, {}),
+      // Likewise, how many in each society know each technology and hold each conviction.
+      techHolders: this.agents.reduce((holders, agent) => {
+        const counts = holders[agent.groupId || 0] ||= {};
+        for (const id of agent.knowledge) counts[id] = (counts[id] || 0) + 1;
+        return holders;
+      }, {}),
+      beliefHolders: this.agents.reduce((holders, agent) => {
+        const counts = holders[agent.groupId || 0] ||= {};
+        for (const id in agent.convictions || {}) if (agent.convictions[id] > 0) counts[id] = (counts[id] || 0) + 1;
+        return holders;
+      }, {}),
       groups: this.groups.map((group) => {
         const { id, name, color, x, y, food, wood, shelters, culture } = group;
         // Mastery by field is derived for the map, which draws each society's advanced works.
-        return { id, name, color, x, y, members: [...group.members], food, wood, shelters, culture, civilization: structuredClone(group.civilization), mastery: { ...fieldMastery(this, group) } };
+        const outward = { id, name, color, x, y, members: [...group.members], food, wood, shelters, culture, mastery: { ...fieldMastery(this, group) } };
+        if (!heldFrom) return { ...outward, civilization: structuredClone(group.civilization) };
+        const { breakthroughs = [], ...civilization } = group.civilization;
+        const from = Math.min(heldFrom.get(id) || 0, breakthroughs.length);
+        return { ...outward, civilization: structuredClone(civilization), held: { from, ids: breakthroughs.slice(from) } };
       }),
       stats: this._stats(), history: this.history.map((point) => ({ ...point })), events: this.events.map((event) => ({ ...event })),
     };

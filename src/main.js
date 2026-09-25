@@ -130,6 +130,7 @@ let ideaRegistry = [];
 let advanceRegistry = [];
 const TERRAIN_NAMES = ['water', 'grass', 'forest', 'sand', 'mountain'];
 let tilesVersion = 0;
+let heldStore = new Map();
 function absorb(next, packed) {
   if (packed) {
     tilesVersion++;
@@ -146,6 +147,17 @@ function absorb(next, packed) {
   if (advancesSent.from === 0) advanceRegistry = advancesSent.list;
   else for (const entry of advancesSent.list) advanceRegistry.push(entry);
   advancesSent.list = advanceRegistry;
+  // Each society's breakthroughs arrive as the tail the page has not yet seen.
+  const live = new Map();
+  for (const group of next.groups) {
+    if (!group.held) continue;
+    const known = group.held.from === 0 ? [] : heldStore.get(group.id) || [];
+    for (const id of group.held.ids) known.push(id);
+    live.set(group.id, known);
+    group.civilization.breakthroughs = known;
+    delete group.held;
+  }
+  heldStore = live;
   return next;
 }
 
@@ -462,8 +474,9 @@ function ideaCardsMarkup(kind, groups, people) {
     if (civilizationSociety !== 'all' && society !== civilizationSociety) continue;
     for (const [id, count] of Object.entries(counts)) holdings.set(id, (holdings.get(id) || 0) + count);
   }
-  for (const person of people) {
-    for (const [id, strength] of Object.entries(person.convictions || {})) if (strength > 0) convictions.set(id, (convictions.get(id) || 0) + 1);
+  for (const [society, counts] of Object.entries(snapshot.beliefHolders || {})) {
+    if (civilizationSociety !== 'all' && society !== civilizationSociety) continue;
+    for (const [id, count] of Object.entries(counts)) convictions.set(id, (convictions.get(id) || 0) + count);
   }
   for (const group of groups) for (const id of group.civilization?.ideas || []) communities.set(id, (communities.get(id) || 0) + 1);
   const cards = ideas.slice(ideaPage * pageSize, (ideaPage + 1) * pageSize).map(idea => {
@@ -604,7 +617,7 @@ function renderCivilization() {
     const projects = groups.filter(group => group.civilization?.project);
     $('#civilization-summary').textContent = `${number(projects.length)} active ${projects.length === 1 ? 'project' : 'projects'} · ${number(snapshot.stats.researchCompleted)} discoveries completed worldwide`;
     liveMarkup(content, `<div class="technology-grid">${TECHNOLOGIES.map(tech => {
-      const holders = people.filter(agent => agent.knowledge?.includes(tech.id));
+      const holders = { length: Object.entries(snapshot.techHolders || {}).reduce((sum, [society, counts]) => sum + (civilizationSociety === 'all' || society === civilizationSociety ? counts[tech.id] || 0 : 0), 0) };
       const communities = groups.filter(group => group.civilization?.technologies.includes(tech.id));
       const research = groups.map(group => ({ group, progress: group.civilization?.research?.[tech.id] || 0, active: group.civilization?.project?.technology === tech.id })).filter(entry => !entry.group.civilization?.technologies.includes(tech.id) && (entry.progress > 0 || entry.active)).sort((a, b) => b.progress - a.progress);
       const readyGroups = groups.filter(group => !group.civilization?.technologies.includes(tech.id) && tech.requires.every(id => group.civilization?.technologies.includes(id)));

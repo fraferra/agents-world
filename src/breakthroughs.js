@@ -73,11 +73,14 @@ export function initializeBreakthroughs(sim) {
 
 const registryCache = new WeakMap();
 function registry(sim) {
+  // The registry only grows at the end, so new entries are indexed as they appear.
+  const list = sim.breakthroughs.list;
   let item = registryCache.get(sim);
-  if (!item || item.list !== sim.breakthroughs.list || item.length !== sim.breakthroughs.list.length) {
-    item = { list: sim.breakthroughs.list, length: sim.breakthroughs.list.length, byId: new Map(sim.breakthroughs.list.map(entry => [entry.id, entry])) };
+  if (!item || item.list !== list || item.length > list.length) {
+    item = { list, length: 0, byId: new Map() };
     registryCache.set(sim, item);
   }
+  while (item.length < list.length) { const entry = list[item.length++]; item.byId.set(entry.id, entry); }
   return item.byId;
 }
 export function breakthroughById(sim, id) { return registry(sim).get(id); }
@@ -184,12 +187,22 @@ export function adoptBreakthrough(sim, group, entry) {
   return true;
 }
 
+// Raw running totals per list of breakthroughs. Lists only ever grow at the end, so adding
+// the new entries continues exactly the same sequence of additions as summing from scratch.
+const rawTotals = new WeakMap();
 export function sumAdvances(sim, ids) {
-  const total = Object.fromEntries(ADVANCE_KEYS.map(key => [key, 0])), byId = registry(sim);
-  for (const id of ids) {
-    const entry = byId.get(id);
-    if (entry) for (const key of ADVANCE_KEYS) total[key] += entry.effects[key] || 0;
+  const byId = registry(sim);
+  let raw = rawTotals.get(ids);
+  if (!raw || raw.length > ids.length || raw.missing) {
+    raw = { length: 0, missing: false, total: Object.fromEntries(ADVANCE_KEYS.map(key => [key, 0])) };
+    rawTotals.set(ids, raw);
   }
+  for (; raw.length < ids.length; raw.length++) {
+    const entry = byId.get(ids[raw.length]);
+    if (entry) for (const key of ADVANCE_KEYS) raw.total[key] += entry.effects[key] || 0;
+    else raw.missing = true;
+  }
+  const total = { ...raw.total };
   // Diminishing returns: each field of advance saturates rather than compounding without end.
   // Pollution saturates too, and clean energy (dams, solar, fusion) displaces the dirtiest of it.
   for (const key of ADVANCE_KEYS) if (key !== 'unrest') total[key] = round(Math.sign(total[key]) * Math.log1p(Math.abs(total[key]) * 1.5) / 1.5);

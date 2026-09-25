@@ -82,3 +82,14 @@ test('breakthroughs spread to trading partners and survive a save exactly', () =
   forged.groups[1].civilization.breakthroughs = ['advance-999'];
   assert.throws(() => Simulation.deserialize(forged), /breakthrough/);
 });
+
+test('running totals of advances equal a fresh sum however the list grew', async () => {
+  const { sumAdvances } = await import('../src/breakthroughs.js');
+  const { Simulation } = await import('../src/simulation.js');
+  const sim = new Simulation({ seed: 'running-totals', population: 10, size: 'compact' });
+  const keys = ['production', 'food', 'research', 'health', 'combat', 'trade', 'energy', 'automation', 'growth', 'pollution', 'unrest'];
+  for (let i = 1; i <= 40; i++) sim.breakthroughs.list.push({ id: `advance-${i}`, effects: Object.fromEntries(keys.map((key, k) => [key, ((i * 7 + k * 13) % 17 - 6) / 37])) });
+  const ids = [];
+  for (let i = 1; i <= 40; i++) { ids.push(`advance-${i}`); sumAdvances(sim, ids); }
+  assert.deepEqual(sumAdvances(sim, ids), sumAdvances(sim, [...ids]), 'incremental equals from scratch');
+});

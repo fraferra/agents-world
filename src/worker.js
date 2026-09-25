@@ -13,6 +13,8 @@ let publishCost = 0;
 let detailId = null;
 let sentDiscoveries = 0;
 let sentBreakthroughs = 0;
+// How many of each society's breakthrough IDs the page holds.
+let sentHeld = new Map();
 let staticTilesSent = false;
 let lastTiles = -Infinity;
 let visible = true;
@@ -21,9 +23,10 @@ const TILE_INTERVAL = 3000;
 function publish({ tiles = false } = {}) {
   const started = performance.now();
   if (simulation) {
-    const snapshot = simulation.view({ detailId, discoveriesFrom: sentDiscoveries, breakthroughsFrom: sentBreakthroughs });
+    const snapshot = simulation.view({ detailId, discoveriesFrom: sentDiscoveries, breakthroughsFrom: sentBreakthroughs, heldFrom: sentHeld });
     sentDiscoveries = simulation.innovation.discoveries.length;
     sentBreakthroughs = simulation.breakthroughs.list.length;
+    sentHeld = new Map(simulation.groups.map(group => [group.id, group.civilization?.breakthroughs?.length || 0]));
     let packed = null;
     if (tiles || !staticTilesSent || started - lastTiles > TILE_INTERVAL) {
       packed = simulation.packTiles(!staticTilesSent);
@@ -43,7 +46,7 @@ self.onmessage = ({ data: { id, type, payload = {} } }) => {
       case 'init': {
         const next = payload.state ? Simulation.deserialize(payload.state) : new Simulation(payload.config);
         simulation = next;
-        sentDiscoveries = 0; sentBreakthroughs = 0; staticTilesSent = false; detailId = null;
+        sentDiscoveries = 0; sentBreakthroughs = 0; sentHeld = new Map(); staticTilesSent = false; detailId = null;
         running = payload.running !== false;
         accumulator = 0;
         lastTime = performance.now();

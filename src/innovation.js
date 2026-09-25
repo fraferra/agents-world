@@ -94,11 +94,20 @@ function remember(sim, agent, type, text) {
 }
 
 // People carry only so many designs in mind, societies only so many in use; the oldest are forgotten.
+// Forgetting comes in small batches once the limit is passed by a tenth, so lists (and the caches
+// built on them) are not rebuilt for every single design learned.
 export const PERSON_DESIGNS = 60, SOCIETY_DESIGNS = 150;
+const designCounts = new WeakMap();
 function forgetOldest(sim, holder, limit, keep = null) {
+  const slack = Math.ceil(limit * .1);
+  if (holder.ideas.length <= limit + slack) return;
   const index = indexed(sim).ideas;
-  let designs = holder.ideas.filter(id => index.get(id)?.kind === 'invention').length;
-  if (designs <= limit) return;
+  // Designs held are counted incrementally as the list grows.
+  let count = designCounts.get(holder.ideas);
+  if (!count || count.length > holder.ideas.length) { count = { length: 0, designs: 0 }; designCounts.set(holder.ideas, count); }
+  for (; count.length < holder.ideas.length; count.length++) if (index.get(holder.ideas[count.length])?.kind === 'invention') count.designs++;
+  let designs = count.designs;
+  if (designs <= limit + slack) return;
   // A new array, so membership caches rebuild.
   holder.ideas = holder.ideas.filter(id => { if (designs > limit && id !== keep && index.get(id)?.kind === 'invention') { designs--; return false; } return true; });
 }
@@ -382,9 +391,13 @@ export function reflectBelief(sim, agent, group) {
 export function spreadIdeas(sim, speaker, listener, trust, deliberate = false) {
   ensure(sim, speaker, null); ensure(sim, listener, null);
   const index = indexed(sim).ideas;
-  const missing = speaker.ideas.filter(id => !knowsIdea(listener, id)).map(id => index.get(id)).filter(Boolean);
-  if (!missing.length) return null;
-  const idea = pick(sim, missing);
+  // Choose uniformly among the speaker's ideas the listener lacks, without building the list.
+  const known = knowledge(listener).set;
+  let count = 0;
+  for (const id of speaker.ideas) if (!known.has(id) && index.has(id)) count++;
+  if (!count) return null;
+  let chosen = Math.floor(sim._random() * count), idea = null;
+  for (const id of speaker.ideas) if (!known.has(id) && index.has(id) && chosen-- === 0) { idea = index.get(id); break; }
   // Conformist transmission: a belief the listener's community already follows is easier to take up.
   const community = sim._groupMap?.get(listener.groupId)?.civilization;
   const conformity = idea.kind !== 'belief' || !community ? 1 : community.doctrine === idea.id ? 1.4 : community.ideas.includes(idea.id) ? 1.15 : .85;
@@ -413,29 +426,39 @@ export function innovationEffects(sim, group) {
 }
 const combined = new WeakMap();
 
+// Each design's effects split once into what it adds and what it costs, in EFFECTS order.
+const splitEffects = new WeakMap();
+function split(idea) {
+  let parts = splitEffects.get(idea);
+  if (!parts) {
+    parts = { gains: new Float64Array(EFFECTS.length), burdens: new Float64Array(EFFECTS.length) };
+    EFFECTS.forEach((key, i) => { const value = idea.effects[key]; if (value >= 0) parts.gains[i] = value; else parts.burdens[i] = -value; });
+    splitEffects.set(idea, parts);
+  }
+  return parts;
+}
+
 function ideaEffects(sim, group) {
   const civ = group?.civilization, state = indexed(sim);
   if (!civ?.ideas) return { ...Object.fromEntries(EFFECTS.map(key => [key, 1])), ...Object.fromEntries(DOCTRINE.map(key => [key, .5])) };
   const previous = state.groups.get(group);
   if (previous && previous.ideas === civ.ideas && previous.length === civ.ideas.length && previous.doctrine === civ.doctrine) return previous.effects;
   const reusable = previous?.ideas === civ.ideas && previous.length <= civ.ideas.length;
-  const gains = reusable ? previous.gains : blank(EFFECTS), burdens = reusable ? previous.burdens : blank(EFFECTS);
+  const gains = reusable ? previous.gains : new Float64Array(EFFECTS.length), burdens = reusable ? previous.burdens : new Float64Array(EFFECTS.length);
   for (let position = reusable ? previous.length : 0; position < civ.ideas.length; position++) {
     const idea = state.ideas.get(civ.ideas[position]);
     if (!idea || idea.kind !== 'invention') continue;
-    for (const key of EFFECTS) {
-      if (idea.effects[key] >= 0) gains[key] += idea.effects[key];
-      else burdens[key] -= idea.effects[key];
-    }
+    const parts = split(idea);
+    for (let i = 0; i < gains.length; i++) { gains[i] += parts.gains[i]; burdens[i] += parts.burdens[i]; }
   }
   const adopted = state.ideas.get(civ.doctrine);
   const effects = {};
-  for (const key of EFFECTS) {
-    const beliefEffect = adopted?.kind === 'belief' ? adopted.effects[key] : 0;
+  for (let i = 0; i < EFFECTS.length; i++) {
+    const key = EFFECTS[i], beliefEffect = adopted?.kind === 'belief' ? adopted.effects[key] : 0;
     // Both benefits and integration costs have diminishing returns. Making
     // costs grow as sqrt(n) against log(n) benefits would make every field
     // inevitably collapse as the archive grows, regardless of design quality.
-    effects[key] = (1 + Math.log1p(gains[key]) * .7) / (1 + Math.log1p(burdens[key]) * .22) * Math.exp(beliefEffect);
+    effects[key] = (1 + Math.log1p(gains[i]) * .7) / (1 + Math.log1p(burdens[i]) * .22) * Math.exp(beliefEffect);
   }
   for (const key of DOCTRINE) effects[key] = adopted?.doctrine?.[key] ?? .5;
   Object.freeze(effects);

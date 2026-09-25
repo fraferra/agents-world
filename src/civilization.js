@@ -94,6 +94,7 @@ const stockKeys = ['stone', 'ore', 'tools', 'metal', 'goods', 'clay', 'fiber', '
 const productionKeys = ['food', 'wood', ...stockKeys];
 export const DIET = Object.freeze(['wild', 'crops', 'game', 'fish', 'herd']);
 const TRADE_GOODS = { tools: 2, cloth: 2, remedies: 3, goods: 1.5, metal: 3, bricks: 1, hides: 1, gems: 5, coal: 1, machines: 4, electronics: 5 };
+const TRADE_ITEMS = Object.keys(TRADE_GOODS);
 const valueKeys = ['security', 'belonging', 'autonomy', 'mastery', 'care'];
 const roleNames = { foraging: 'Forager', farming: 'Farmer', forestry: 'Forester', mining: 'Miner', crafting: 'Artisan', scholarship: 'Scholar', medicine: 'Healer', leadership: 'Organiser' };
 // Occupations of a modern society, which appear as its institutions do.
@@ -835,7 +836,7 @@ export function considerCivilization(sim, agent, group) {
   if (civ.buildings.powerplant && !civ.buildings.reactor && stock.coal < 4 + members * .05) want({ coal: 4 + members * .05 }, modern.powered ? 48 : 62 + (norms?.hierarchy || 0) * 20, modern.powered ? 'The power station is burning through its coal.' : 'The power station has gone dark for want of coal.');
   if (civ.buildings.reactor && stock.uranium < 1) want({ uranium: 1 }, 40, 'The reactor needs uranium fuel.');
   // How many warheads a society wants depends on how warlike it is and how threatened it feels.
-  const threat = sim.diplomacy?.relations.some(r => (r.a === group.id || r.b === group.id) && (r.status === 'war' || r.tension > 50)) ? 2 : 0;
+  const threat = civ.buildings.silo && sim.diplomacy?.relations.some(r => (r.a === group.id || r.b === group.id) && (r.status === 'war' || r.tension > 50)) ? 2 : 0;
   const arsenal = civ.buildings.silo ? Math.round(1 + (norms?.martial || 0) * 5 + threat) : 0;
   if (agent.age >= 18 && civ.buildings.silo && modern.powered && stock.warheads < arsenal) {
     if (stock.uranium >= .5 && stock.electronics >= .2 && stock.metal >= .3) add('enrich', 30 + (norms?.martial || 0) * 20 + threat * 6 + agent.skills.scholarship * .15 - mind.values.care * 12, threat ? 'Our rivals threaten us; the arsenal must deter them.' : 'The state wants a nuclear deterrent.', ['Enrich uranium', 'Assemble a warhead']);
@@ -852,7 +853,8 @@ export function considerCivilization(sim, agent, group) {
   if (civ.buildings.school && (civ.technologies.some(id => !agent.knowledge.includes(id)) || agent.skills.scholarship < 30)) add('study', 30 + mind.values.mastery * 16 + mind.needs.stimulation * .18, 'Study the community’s accumulated knowledge.', ['Visit the school', 'Study a shared technique', 'Practice it']);
   const patient = civ.technologies.includes('medicine') ? neighbors.filter(other => other.health < 80).sort((a, b) => a.health - b.health)[0] : null;
   if (patient) add('heal', 45 + (100 - patient.health) * .4 + mind.values.care * 15, `${patient.name} needs care and practical medical knowledge.`, ['Reach the patient', 'Provide care and food'], patient.id);
-  const neighborGroup = daily(sim, 'partner', group, civ.lastTradeDay, () => sim.groups.find(other => other.id !== group.id && other.civilization && tradeAccess(sim, group, other) && exchangePair(group, other)) || null);
+  // Whether there is anything to exchange is cheap to check; reachability and relations are not.
+  const neighborGroup = daily(sim, 'partner', group, civ.lastTradeDay, () => sim.groups.find(other => other.id !== group.id && other.civilization && exchangePair(group, other) && tradeAccess(sim, group, other)) || null);
   const pair = neighborGroup && exchangePair(group, neighborGroup);
   // A couple of traders suffice; the rest of the community keeps working.
   const traders = sim._civilAssignments.farms.get(`trade:${group.id}`) || 0;
@@ -1156,19 +1158,35 @@ function execute(sim, agent, group, choice) {
 function tradeTarget(group, item) {
   const n = group.members.length;
   const b = group.civilization.buildings, awaited = awaitedMaterials(group)[item] ? techById.get(group.civilization.project.technology).materials[item] : 0;
-  return Math.max(awaited, { tools: Math.max(2, n * .12), cloth: Math.max(1, n * .15), remedies: Math.max(1, n * .08), goods: Math.max(2, n * .2), metal: 2, bricks: 3, hides: Math.max(1, n * .08), gems: 1,
-    coal: b.factory || b.powerplant ? 4 + n * .05 : 0, machines: b.factory ? Math.max(2, n * .12) : Math.max(1, n * .05), electronics: b.datacenter || b.silo || b.reactor ? 2 : 0 }[item]);
+  let base;
+  switch (item) {
+    case 'tools': base = Math.max(2, n * .12); break;
+    case 'cloth': base = Math.max(1, n * .15); break;
+    case 'remedies': base = Math.max(1, n * .08); break;
+    case 'goods': base = Math.max(2, n * .2); break;
+    case 'metal': base = 2; break;
+    case 'bricks': base = 3; break;
+    case 'hides': base = Math.max(1, n * .08); break;
+    case 'gems': base = 1; break;
+    case 'coal': base = b.factory || b.powerplant ? 4 + n * .05 : 0; break;
+    case 'machines': base = b.factory ? Math.max(2, n * .12) : Math.max(1, n * .05); break;
+    case 'electronics': base = b.datacenter || b.silo || b.reactor ? 2 : 0; break;
+  }
+  return Math.max(awaited, base);
 }
 
 function exchangePair(first, second) {
   // A buyer must actually need the good and have surplus food to pay; the seller
   // must hold a surplus and want food. This prevents meaningless back-and-forth
   // trades and unlimited stock accumulation.
-  for (const item of Object.keys(TRADE_GOODS)) {
-    for (const [seller, buyer] of [[first, second], [second, first]]) {
-      const price = TRADE_GOODS[item];
-      if (seller.civilization.stock[item] >= tradeTarget(seller, item) + 1 && buyer.civilization.stock[item] < tradeTarget(buyer, item)
-        && buyer.food > Math.max(2, buyer.members.length) + price && seller.food < seller.members.length * 2) return { seller, buyer, item, price };
+  // A seller must want food; checked first, since it rules out a direction for every good.
+  const forward = first.food < first.members.length * 2, backward = second.food < second.members.length * 2;
+  if (!forward && !backward) return null;
+  for (const item of TRADE_ITEMS) {
+    const price = TRADE_GOODS[item];
+    for (const [seller, buyer, wants] of [[first, second, forward], [second, first, backward]]) {
+      if (wants && buyer.food > Math.max(2, buyer.members.length) + price
+        && seller.civilization.stock[item] >= tradeTarget(seller, item) + 1 && buyer.civilization.stock[item] < tradeTarget(buyer, item)) return { seller, buyer, item, price };
     }
   }
   return null;

@@ -39,7 +39,14 @@ Version 1–5 worlds upgrade automatically to version 6, preserving inhabitants,
 
 The browser autosaves to IndexedDB every minute and when the tab is hidden or closed, retaining the previous checkpoint as a recovery copy. Opening the app at the same address restores the saved world. Use the download icon for a permanent JSON checkpoint; “Import a saved world” restores an exported browser or headless world and pauses it for inspection. Malformed saves are rejected before replacing the current world. Import also exports the previous world first.
 
-The page stays light during long runs. The simulation runs in a worker, which sends the page only what changed: everyone's position and outward state, with a full mind and memories only for the person being inspected, newly recorded ideas rather than the whole registry, and idea holder counts rather than everyone's list. The map arrives as compact binary arrays every three seconds, moved rather than copied, and the page updates its tiles in place. A hidden tab is updated only every five seconds. Autosaves alternate between two slots, so saving never reads the previous world back into memory.
+The page stays light during long runs. The simulation runs in a worker, which sends the page only what changed: everyone's position and outward state, with a full mind and memories only for the person being inspected, newly recorded ideas and breakthroughs rather than the whole registry, only the new end of each society's list of breakthroughs, and per-society counts of who holds each idea, technology and conviction rather than everyone's lists. The map arrives as compact binary arrays every three seconds, moved rather than copied, and the page updates its tiles in place. A hidden tab is updated only every five seconds.
+
+Long runs stay fast. Old worlds with thousands of breakthroughs and ideas are costly in three places, and each now takes time in proportion to what changed, not to how much has accumulated:
+- A society's advances are kept as running totals.
+- The effects of its designs are split once into gains and costs.
+- People and societies forget old designs in small batches rather than one at a time.
+
+Trade partners are sought only among societies with something to exchange, and the whole-map statistics are summed once a day. In a 147-year world these changes make a simulated day about 1.6 times faster. Autosaves alternate between two slots, so saving never reads the previous world back into memory.
 
 Keep one active browser tab per experiment: multiple tabs at the same address share the autosave slot. Browser storage belongs to its exact origin (including the port), and clearing site data removes it. Export files for experiments you want to keep. Closing the tab can lose changes since the latest completed autosave.
 

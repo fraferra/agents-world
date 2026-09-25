@@ -36,3 +36,22 @@ test('packed tiles reproduce every tile field', () => {
   }
   assert.equal(sim.packTiles(false).terrain, undefined, 'static fields are sent only on request');
 });
+
+test('a long-lived page receives only the new tail of each society\'s breakthroughs, and counts instead of lists', () => {
+  const sim = new Simulation({ seed: 'light-view', population: 40, size: 'compact' });
+  sim.step(300);
+  const [group] = sim.groups;
+  group.civilization.breakthroughs = ['advance-1', 'advance-2', 'advance-3'];
+  const first = sim.view({ heldFrom: new Map() }).groups.find(entry => entry.id === group.id);
+  assert.deepEqual(first.held, { from: 0, ids: ['advance-1', 'advance-2', 'advance-3'] });
+  assert.equal(first.civilization.breakthroughs, undefined);
+  group.civilization.breakthroughs.push('advance-4');
+  const next = sim.view({ heldFrom: new Map([[group.id, 3]]) });
+  assert.deepEqual(next.groups.find(entry => entry.id === group.id).held, { from: 3, ids: ['advance-4'] });
+  // Lite people carry no technology or conviction lists; per-society counts cover everyone.
+  assert.ok(next.agents.filter(agent => agent.lite).every(agent => !('knowledge' in agent) && !('convictions' in agent)));
+  const known = Object.values(next.techHolders).reduce((sum, counts) => sum + Object.values(counts).reduce((a, b) => a + b, 0), 0);
+  assert.equal(known, sim.agents.reduce((sum, agent) => sum + agent.knowledge.length, 0));
+  // Without the page's record, every list is sent whole, as before.
+  assert.deepEqual(sim.view().groups.find(entry => entry.id === group.id).civilization.breakthroughs, group.civilization.breakthroughs);
+});
