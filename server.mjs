@@ -113,8 +113,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       console.error(`Could not start Common Ground: ${error.message}`);
       process.exitCode = 1;
     });
-    server.listen(port, '127.0.0.1', () => {
-      console.log(`Common Ground is running at http://127.0.0.1:${port}`);
+    // Local use stays on this machine; on a host such as Railway (or with HOST set) listen publicly.
+    const host = process.env.HOST || (process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : '127.0.0.1');
+    server.listen(port, host, () => {
+      console.log(`Common Ground is running at http://${host}:${port}`);
       console.log('Keep this terminal open. Press Ctrl+C to stop the server.');
     });
   } catch (error) {

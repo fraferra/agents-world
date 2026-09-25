@@ -4,6 +4,8 @@
  * clay and gems are effectively finite.
  */
 export const TILE_RESOURCES = Object.freeze(['clay', 'fiber', 'herbs', 'game', 'fish', 'gems']);
+// Fossil and fissile deposits, added in save version 7; older worlds gain them from the same noise.
+export const DEPOSITS = Object.freeze(['coal', 'uranium']);
 export const RESOURCE_INFO = Object.freeze({
   food: { name: 'Wild food', renews: true, uses: 'Eaten; stored by societies; funds experiments.' },
   wood: { name: 'Timber', renews: true, uses: 'Shelters, buildings, fuel for kilns and forges, tool handles.' },
@@ -15,6 +17,11 @@ export const RESOURCE_INFO = Object.freeze({
   game: { name: 'Game', renews: true, uses: 'Hunted for food and hides. Herds recover slowly if over-hunted.' },
   fish: { name: 'Fish', renews: true, uses: 'Caught from shores and riverbanks for food. Stocks recover logistically.' },
   gems: { name: 'Gems', renews: false, uses: 'Luxuries for temples, observatories, art and trade. Rare, in mountains.' },
+  coal: { name: 'Coal', renews: false, uses: 'Fuel for steam engines, factories, railways and power stations. Seams lie in hills and old forest basins.' },
+  uranium: { name: 'Uranium', renews: false, uses: 'Fuel for reactors and material for nuclear weapons. Very rare, in mountains.' },
+  machines: { name: 'Machines', renews: false, uses: 'Made in factories from metal and coal; multiply the output of farms and workshops.' },
+  electronics: { name: 'Electronics', renews: false, uses: 'Assembled in powered factories; needed for computers, reactors and missiles.' },
+  warheads: { name: 'Warheads', renews: false, uses: 'Nuclear weapons. They deter attack, and can destroy a society.' },
 });
 
 function hash(seed, salt) {
@@ -70,7 +77,7 @@ export function generateResources(sim, index, shore) {
   const tile = sim.tiles[index], x = index % sim.width, y = Math.floor(index / sim.width);
   const scale = 96 / Math.min(sim.width, 224);
   const n = salt => noise(x * scale / 7, y * scale / 7, hash(sim.seed, salt));
-  if (tile.terrain === 'water') return { clay: 0, fiber: 0, herbs: 0, game: 0, fish: 0, gems: 0 };
+  if (tile.terrain === 'water') return { clay: 0, fiber: 0, herbs: 0, game: 0, fish: 0, gems: 0, ...generateDeposits(sim, index) };
   const clay = clamp((shore ? .42 : 0) + (tile.terrain === 'sand' ? .3 : 0) + (tile.terrain === 'grass' && tile.elevation < .4 ? .15 : 0) + (n(11) - .5) * .5);
   const gems = tile.terrain === 'mountain' ? clamp((n(29) - .68) * 2.6) : tile.elevation > .6 ? clamp((n(29) - .8) * 1.6) : 0;
   return {
@@ -80,7 +87,20 @@ export function generateResources(sim, index, shore) {
     game: round(capacity(tile, shore, 'game') * (.45 + n(19) * .55)),
     fish: round(capacity(tile, shore, 'fish') * (.5 + n(23) * .5)),
     gems: round(gems),
+    ...generateDeposits(sim, index),
   };
+}
+
+/** Coal seams in hills and old forest basins; uranium, rarer still, in mountains. */
+export function generateDeposits(sim, index) {
+  const tile = sim.tiles[index], x = index % sim.width, y = Math.floor(index / sim.width);
+  if (tile.terrain === 'water') return { coal: 0, uranium: 0 };
+  const scale = 96 / Math.min(sim.width, 224);
+  const n = salt => noise(x * scale / 9, y * scale / 9, hash(sim.seed, salt));
+  const basin = tile.terrain === 'mountain' ? .5 : tile.elevation > .45 ? 1 : tile.terrain === 'forest' ? .7 : .35;
+  const coal = clamp((n(31) - .58) * 2.4 * basin);
+  const uranium = tile.terrain === 'mountain' ? clamp((n(37) - .72) * 2.2) : tile.elevation > .62 ? clamp((n(37) - .84) * 1.4) : 0;
+  return { coal: round(coal), uranium: round(uranium) };
 }
 
 /** Renewal for one tile on the staggered eight-day ecology pass. */

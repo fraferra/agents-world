@@ -351,7 +351,7 @@ test('legacy version 1 saves migrate without resetting inhabitants, land, histor
     assert.ok(migrated.groups[index].civilization);
   }
   assert.deepEqual(migrated.serialize(), same.serialize());
-  assert.equal(migrated.serialize().version, 6);
+  assert.equal(migrated.serialize().version, 7);
   assert.ok(migrated.agents.every((agent) => agent.psyche?.aspiration && agent.psyche.techniques.length === 0));
   migrated.step(90); same.step(90);
   assert.deepEqual(migrated.serialize(), same.serialize());
@@ -375,7 +375,7 @@ test('version 2 migration preserves existing resources, learning, and RNG while 
   legacy.civilization.messages = legacy.civilization.messages.filter(message => !['invention', 'belief', 'technique', 'advice', 'gossip'].includes(message.kind)).map(({ techniqueId, about, ...message }) => message);
   legacy.events = legacy.events.filter(event => ['birth', 'death', 'group', 'world', 'migration', 'technology', 'industry', 'communication', 'trade'].includes(event.type));
   const migrated = Simulation.deserialize(legacy), same = Simulation.deserialize(structuredClone(legacy));
-  assert.equal(migrated.serialize().version, 6);
+  assert.equal(migrated.serialize().version, 7);
   assert.equal(Object.hasOwn(migrated.config, 'maxPopulation'), false);
   assert.equal(migrated.day, legacy.day);
   assert.equal(migrated.rngState, legacy.rngState);

@@ -10,6 +10,10 @@
  * production systems. Wealth is real stored value (grain, animals, goods): it can
  * be eaten in hard times and it makes a person a more attractive partner, a more
  * likely leader and a more persuasive voice.
+ *
+ * Industry adds two more: factory economies, where owners of machines keep the
+ * most and inequality peaks (Kuznets 1955), and information economies, where
+ * education and public institutions level it somewhat again.
  */
 const clamp = (value, low = 0, high = 1) => Math.min(high, Math.max(low, value));
 const round = value => Math.round(value * 1e4) / 1e4 || 0;
@@ -21,12 +25,16 @@ export const ECONOMIES = Object.freeze({
   horticultural: { label: 'Horticultural', keep: .14, levelling: .02, inherit: .35 },
   pastoral: { label: 'Pastoral', keep: .35, levelling: .005, inherit: .9 },
   agricultural: { label: 'Agricultural', keep: .3, levelling: .004, inherit: .85 },
+  industrial: { label: 'Industrial', keep: .42, levelling: .003, inherit: .85 },
+  information: { label: 'Information', keep: .34, levelling: .008, inherit: .7 },
 });
 
 /** How a society makes its living, from what it has built. */
 export function economyOf(group) {
   const b = group?.civilization?.buildings;
   if (!b) return 'foraging';
+  if (b.datacenter > 0) return 'information';
+  if (b.factory > 0) return 'industrial';
   if (b.pasture > 0 && b.pasture >= b.farm) return 'pastoral';
   if (b.farm > 0 && (b.granary > 0 || group.civilization.technologies.includes('irrigation'))) return 'agricultural';
   if (b.farm > 0) return 'horticultural';

@@ -285,7 +285,7 @@ test('inner lives resume exactly, reject forged state, and older saves gain them
   const migrated = Simulation.deserialize(legacy), twin = Simulation.deserialize(structuredClone(legacy));
   assert.equal(migrated.rngState, legacy.rngState);
   assert.ok(migrated.agents.every(agent => agent.psyche.aspiration && agent.psyche.techniques.length === 0));
-  assert.equal(migrated.serialize().version, 6);
+  assert.equal(migrated.serialize().version, 7);
   migrated.step(60); twin.step(60);
   assert.deepEqual(migrated.serialize(), twin.serialize());
 });

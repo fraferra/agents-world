@@ -121,7 +121,7 @@ try {
   const saved = JSON.parse(await readFile(join(output, saveFile), 'utf8'));
   assert.equal(saved.format, 'common-ground');
   assert.equal(saved.simulation.seed, testSeed);
-  assert.equal(saved.simulation.version, 6);
+  assert.equal(saved.simulation.version, 7);
   assert.equal(saved.simulation.width, 224);
   assert.equal(saved.simulation.height, 144);
   assert.equal(saved.simulation.config.size, 'large');
@@ -139,7 +139,7 @@ try {
   await fileInput(invalidPath);
   await delay(300);
   assert.equal(await day(), saved.simulation.day + 1, 'malformed import does not change world');
-  console.log('PASS: large world, version 6 JSON export, autosave reload, exact import, malformed save rejection.');
+  console.log('PASS: large world, version 7 JSON export, autosave reload, exact import, malformed save rejection.');
 
   // Exercise a real v1-shaped compact save through the user-facing importer.
   const legacy = await evaluate(`(async()=>{

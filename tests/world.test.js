@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { isDeepStrictEqual } from 'node:util';
 import { Simulation, WORLD_SIZES } from '../src/simulation.js';
 import { TECHNOLOGIES, BUILDINGS, SKILLS, initializeSociety, considerCivilization, have, dietVariety } from '../src/civilization.js';
-import { TILE_RESOURCES, shoreMask, generateResources, renew, capacity } from '../src/resources.js';
+import { TILE_RESOURCES, DEPOSITS, shoreMask, generateResources, renew, capacity } from '../src/resources.js';
 import { initializeCulture, advanceCulture, shareCustom, customModifiers, tierOf } from '../src/culture.js';
 import { considerExpansion, claimFriction, landPressure } from '../src/expansion.js';
 import { innovationEffects, initializeGroupIdeas } from '../src/innovation.js';
@@ -47,7 +47,7 @@ test('larger worlds have more regions and rivers, and every land tile carries se
   }
   assert.ok(standard.tiles.some(tile => tile.gems > .1) && standard.tiles.some(tile => tile.clay > .4));
   // Deposits come from noise, not the random generator: regeneration is identical.
-  assert.deepEqual(generateResources(standard, 500, shore[500]), Object.fromEntries(TILE_RESOURCES.map(key => [key, standard.tiles[500][key]])));
+  assert.deepEqual(generateResources(standard, 500, shore[500]), Object.fromEntries([...TILE_RESOURCES, ...DEPOSITS].map(key => [key, standard.tiles[500][key]])));
 });
 
 test('game and fish regrow logistically: depleted stocks recover slowly, healthy ones quickly', () => {
@@ -256,13 +256,13 @@ test('worlds stay deterministic and exact through culture, colonies and material
   const legacy = sim.serialize();
   legacy.version = 4; delete legacy.culture;
   for (const tile of legacy.tiles) for (const key of TILE_RESOURCES) delete tile[key];
-  for (const group of legacy.groups) { delete group.civilization.culture; delete group.civilization.diet; for (const key of ['clay', 'fiber', 'herbs', 'gems', 'hides', 'bricks', 'cloth', 'remedies']) { delete group.civilization.stock[key]; delete group.civilization.production[key]; } for (const key of ['fishery', 'loom', 'apothecary', 'pasture', 'market', 'library', 'temple', 'walls', 'observatory', 'hall', 'dock']) delete group.civilization.buildings[key]; }
+  for (const group of legacy.groups) { delete group.civilization.culture; delete group.civilization.diet; for (const key of ['clay', 'fiber', 'herbs', 'gems', 'hides', 'bricks', 'cloth', 'remedies', 'coal', 'uranium', 'machines', 'electronics', 'warheads']) { delete group.civilization.stock[key]; delete group.civilization.production[key]; } for (const key of ['fishery', 'loom', 'apothecary', 'pasture', 'market', 'library', 'temple', 'walls', 'observatory', 'hall', 'dock', 'factory', 'railway', 'hospital', 'powerplant', 'datacenter', 'reactor', 'silo']) delete group.civilization.buildings[key]; }
   for (const agent of legacy.agents) { delete agent.psyche.expansion; delete agent.psyche.record.founded; }
   const known = new Set(TECHNOLOGIES.slice(0, 0).map(tech => tech.id));
   for (const group of legacy.groups) { group.civilization.technologies = group.civilization.technologies.filter(id => ['stonecraft', 'cultivation', 'forestry', 'pottery', 'irrigation', 'metallurgy', 'medicine', 'writing', 'engineering'].includes(id)); if (group.civilization.project && !group.civilization.technologies.includes(group.civilization.project.technology) && !TECHNOLOGIES.find(tech => tech.id === group.civilization.project.technology).requires.every(id => group.civilization.technologies.includes(id))) group.civilization.project = null; }
   assert.equal(known.size, 0);
   const migrated = Simulation.deserialize(structuredClone(legacy)), twin = Simulation.deserialize(structuredClone(legacy));
-  assert.equal(migrated.serialize().version, 6);
+  assert.equal(migrated.serialize().version, 7);
   assert.ok(migrated.groups.every(group => group.civilization.culture && have(group, 'bricks') === 0));
   assert.ok(migrated.agents.every(agent => agent.psyche.expansion > 0));
   migrated.step(60); twin.step(60);

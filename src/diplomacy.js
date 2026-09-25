@@ -3,14 +3,27 @@ import { innovationEffects } from './innovation.js';
 import { appraise } from './psyche.js';
 import { shareCustom } from './culture.js';
 import { claimFriction } from './expansion.js';
-import { startOutbreak } from './civilization.js';
+import { startOutbreak, industry, contaminate } from './civilization.js';
+import { addWealth } from './economy.js';
+import { linkBetween } from './infrastructure.js';
 
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-const statuses = new Set(['neutral', 'trade', 'alliance', 'war', 'truce']);
+const statuses = new Set(['neutral', 'trade', 'alliance', 'war', 'truce', 'tributary']);
 export function initializeDiplomacy(sim) {
-  sim.diplomacy = { relations: [], warsStarted: 0, warDeaths: 0, treaties: 0, raids: 0 };
+  sim.diplomacy = { relations: [], warsStarted: 0, warDeaths: 0, treaties: 0, raids: 0, nuclearStrikes: 0, subjugations: 0 };
 }
+/** The overlord a society pays tribute to, if any. */
+export function overlordOf(sim, group) {
+  const r = sim.diplomacy?.relations.find(r => r.status === 'tributary' && r.overlord !== group.id && (r.a === group.id || r.b === group.id));
+  return r ? sim._groupMap.get(r.overlord) || null : null;
+}
+/** The societies that pay tribute to this one. */
+export function tributariesOf(sim, group) {
+  return (sim.diplomacy?.relations || []).filter(r => r.status === 'tributary' && r.overlord === group.id).map(r => sim._groupMap.get(r.a === group.id ? r.b : r.a)).filter(Boolean);
+}
+/** Whole warheads a society can launch. */
+const warheads = group => Math.floor(group?.civilization?.stock.warheads || 0);
 // Relations are indexed by pair; the index is rebuilt whenever the list is replaced.
 const relationIndex = new WeakMap();
 function relation(sim, a, b, create = false) {
@@ -34,8 +47,10 @@ export function tradeAccess(sim, a, b) {
   const r = relation(sim, a, b);
   if (r?.status === 'war') return false;
   const ea = innovationEffects(sim, a), eb = innovationEffects(sim, b);
+  // Roads and railways carry traders along their whole length.
+  if (linkBetween(sim, a, b)) return !r || r.tension < 78 || r.status === 'alliance';
   // Logistics (and docks) extend the range in which an actual trader can seek exchange.
-  return distance(a, b) <= 22 * Math.sqrt(ea.trade * eb.trade) * (a.civilization?.buildings.dock || b.civilization?.buildings.dock ? 1.35 : 1)
+  return distance(a, b) <= 22 * Math.sqrt(ea.trade * eb.trade) * (a.civilization?.buildings.dock || b.civilization?.buildings.dock ? 1.35 : 1) * Math.max(industry(a).reach, industry(b).reach)
     && (!r || r.tension < 78 || r.status === 'alliance');
 }
 /** A colony and its mother community begin as allies bound by kinship. */
@@ -44,6 +59,22 @@ export function establishKinship(sim, parent, colony) {
   r.trust = .7; r.tension = 0; r.status = 'alliance'; r.since = sim.day; r.lastContact = sim.day;
   r.reason = `${colony.name} was founded by pioneers from ${parent.name}; kinship keeps them allied.`;
   sim.diplomacy.treaties++;
+}
+
+/** The standing relation between two societies, if they have met. */
+export function relationBetween(sim, a, b) { return a && b && a.id !== b.id ? relation(sim, a, b) || null : null; }
+
+/** Whether two societies are at war; marriages and visits stop between enemies. */
+export function atWar(sim, a, b) { return !!a && !!b && a.id !== b.id && relation(sim, a, b)?.status === 'war'; }
+
+/** Marriages bind communities: kin in each other's camps build trust and ease rivalry. */
+export function recordMarriage(sim, a, b) {
+  if (!a || !b || a.id === b.id) return;
+  const r = relation(sim, a, b, true);
+  r.lastContact = sim.day;
+  r.trust = clamp(r.trust + .06, -1, 1);
+  r.tension = Math.max(0, r.tension - 5);
+  shareCustom(sim, a, b, .03); shareCustom(sim, b, a, .03);
 }
 
 export function recordTrade(sim, a, b, volume) {
@@ -71,10 +102,13 @@ function situation(sim, group, effects) {
   const supplies = clamp(group.food / Math.max(1, adults.length * .15), .2, 1);
   const tools = Math.min(.4, (group.civilization?.stock.tools || 0) / Math.max(1, adults.length) * .3);
   const walls = 1 + Math.min(2, group.civilization?.buildings.walls || 0) * .3;
-  return { members, adults, stress, power: Math.sqrt(adults.length) * effects.combat * supplies * (1 + tools) * (.7 + effects.solidarity * .6) * walls };
+  // Industrial armies: machine-made weapons, and railways that move troops and supplies.
+  const modern = industry(group), arms = 1 + (modern.machines * .5) + (group.civilization?.stock.metal >= 2 && modern.machines ? .2 : 0) + (modern.reach > 1 ? .15 : 0);
+  return { members, adults, stress, power: Math.sqrt(adults.length) * effects.combat * supplies * (1 + tools) * (.7 + effects.solidarity * .6) * walls * arms };
 }
 function setStatus(sim, r, status, a, b, reason) {
   r.status = status; r.since = sim.day; r.reason = reason;
+  delete r.overlord;
   if (status === 'war') { r.warDays = 0; sim.diplomacy.warsStarted++; }
   else if (status === 'alliance' || status === 'truce') sim.diplomacy.treaties++;
   const type = status === 'war' ? 'war' : status === 'truce' ? 'peace' : 'diplomacy';
@@ -128,6 +162,129 @@ function raid(sim, r, a, b, sa, sb) {
   if (sim.diplomacy.raids % 6 === 1) sim._event('war', r.reason, { groupId: winner.id });
 }
 
+/**
+ * A nuclear strike kills much of a society, levels its buildings and poisons the
+ * land. A target that still holds warheads strikes back: mutual destruction.
+ */
+function nuclearStrike(sim, r, attacker, target, retaliation = false) {
+  attacker.civilization.stock.warheads -= 1;
+  sim.diplomacy.nuclearStrikes++;
+  const people = target.members.map(id => sim._agentMap.get(id)).filter(a => a && a.health > 0);
+  const share = .35 + sim._random() * .25;
+  let killed = 0;
+  for (const agent of people) {
+    const near = Math.hypot(agent.x - target.x, agent.y - target.y) < 14;
+    if (near && sim._random() < share) { agent.health = 0; agent._deathCause = 'nuclear war'; killed++; r.casualties++; sim.diplomacy.warDeaths++; }
+    else {
+      agent.health = Math.max(0, agent.health - (near ? 20 + sim._random() * 25 : 5));
+      if (agent.health === 0) { agent._deathCause = 'radiation'; killed++; r.casualties++; sim.diplomacy.warDeaths++; }
+      else if (agent.age >= 6) appraise(sim, agent, 'catastrophe', { text: `${attacker.name} destroyed our home with a nuclear weapon.` });
+    }
+  }
+  for (const key of Object.keys(target.civilization.buildings)) target.civilization.buildings[key] = Math.floor(target.civilization.buildings[key] * (.2 + sim._random() * .2));
+  target.food *= .3; target.wood *= .3; target.shelters = Math.floor(target.shelters * .25);
+  contaminate(sim, target.x, target.y, 7, .15);
+  // The whole world is shaken, and the attacker's own people are not untouched by it.
+  for (const agent of sim.agents) if (agent.psyche && agent.health > 0 && agent.groupId !== target.id) agent.psyche.mood.fear = Math.min(1, agent.psyche.mood.fear + (agent.groupId === attacker.id ? .3 : .15));
+  sim._event('war', `${attacker.name} ${retaliation ? 'retaliates with' : 'launches'} a nuclear strike on ${target.name}. ${killed} people die at once; the city is levelled and its land poisoned.`, { groupId: attacker.id });
+  if (!retaliation && warheads(target) > 0 && target.members.length) nuclearStrike(sim, r, target, attacker, true);
+}
+
+/** A nuclear power losing a war, or led by a militant state, may use its arsenal. */
+function considerNuclearStrike(sim, r, a, b, sa, sb, ea, eb) {
+  for (const [side, other, own, enemy, effects] of [[a, b, sa, sb, ea], [b, a, sb, sa, eb]]) {
+    if (warheads(side) < 1 || !other.members.length) continue;
+    const losing = own.power < enemy.power * .7 || own.stress > .6;
+    const martial = side.civilization.culture?.norms.martial ?? .5;
+    // The taboo deepens with every use, and an armed enemy means certain retaliation.
+    const restraint = (warheads(other) > 0 ? .25 : 1) / (1 + sim.diplomacy.nuclearStrikes * .5);
+    if (sim._random() < (losing ? .05 : .005) * (.4 + martial + effects.militancy * .5) * restraint) {
+      nuclearStrike(sim, r, side, other);
+      r.tension = 40; r.trust = -1;
+      setStatus(sim, r, 'truce', a, b, 'The horror of atomic war ends the fighting.');
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Subjugation: the defeated, or the intimidated, keep their people, culture and
+ * buildings but pay tribute to an overlord. Tribute enriches the overlord's
+ * store and its leader, and breeds resentment in the tributary.
+ */
+function subjugate(sim, r, overlord, vassal, reason) {
+  r.status = 'tributary'; r.overlord = overlord.id; r.since = sim.day; r.warDays = 0; r.reason = reason;
+  r.tension = Math.max(r.tension, 35); r.trust = Math.min(r.trust, -.2);
+  sim.diplomacy.subjugations = (sim.diplomacy.subjugations || 0) + 1;
+  const culture = overlord.civilization.culture;
+  if (culture) {
+    culture.norms.hierarchy = Math.round(Math.min(1, culture.norms.hierarchy + .05) * 1e4) / 1e4;
+    culture.norms.martial = Math.round(Math.min(1, culture.norms.martial + .03) * 1e4) / 1e4;
+  }
+  for (const id of vassal.members) {
+    const agent = sim._agentMap.get(id);
+    if (agent?.age >= 10) appraise(sim, agent, 'departure', { text: `Our people now pay tribute to ${overlord.name}.` });
+  }
+  sim._event('war', `${vassal.name} becomes a tributary of ${overlord.name}. ${reason}`, { groupId: overlord.id });
+  const count = tributariesOf(sim, overlord).length;
+  if (count === 3) sim._event('group', `${overlord.name} now rules three tributaries: an empire is born.`, { groupId: overlord.id });
+}
+
+const TRIBUTE = ['tools', 'metal', 'goods', 'cloth', 'bricks', 'gems', 'remedies', 'hides', 'coal', 'machines', 'electronics'];
+/** Monthly tribute: a share of the tributary's food and goods; the overlord's leader keeps a cut. */
+function payTribute(sim, overlord, vassal) {
+  const food = vassal.food * .06;
+  vassal.food -= food; overlord.food += food;
+  let value = food;
+  for (const key of TRIBUTE) {
+    const paid = (vassal.civilization.stock[key] || 0) * .08;
+    vassal.civilization.stock[key] -= paid; overlord.civilization.stock[key] += paid; value += paid;
+  }
+  const leader = sim._agentMap.get(overlord.civilization.culture?.leaderId);
+  if (leader && overlord.food > 0) {
+    const cut = Math.min(overlord.food, food * (overlord.civilization.culture.norms.hierarchy ?? .3));
+    overlord.food -= cut; addWealth(leader, cut);
+  }
+  return value;
+}
+
+/** Monthly life of a tributary relation: tribute, resentment, rebellion or annexation. Returns true if it ended. */
+function tributaryMonth(sim, r, a, b, sa, sb, contact) {
+  const [overlord, vassal, so, sv] = r.overlord === a.id ? [a, b, sa, sb] : [b, a, sb, sa];
+  if (!contact) { setStatus(sim, r, 'neutral', a, b, `Distance has loosened ${overlord.name}'s hold; ${vassal.name} no longer pays tribute.`); return true; }
+  payTribute(sim, overlord, vassal);
+  r.lastContact = sim.day;
+  // Tribute breeds resentment, faster where the tributary is martial and proud.
+  const pride = vassal.civilization.culture?.norms.martial ?? .5;
+  r.tension = clamp(r.tension + .4 + pride * .6, 0, 100);
+  r.trust = clamp(r.trust - .005, -1, 1);
+  // Rebellion: when the tributary has grown strong, or its overlord is busy with another war.
+  const busy = sim.diplomacy.relations.some(other => other !== r && other.status === 'war' && (other.a === overlord.id || other.b === overlord.id));
+  const odds = sv.power > so.power * .8 ? .3 : busy && sv.power > so.power * .45 ? .12 : sv.power > so.power * .6 ? .04 : 0;
+  if (odds && sim._random() < odds * (.4 + r.tension / 100) * (.6 + pride)) {
+    r.tension = Math.max(r.tension, 70);
+    setStatus(sim, r, 'war', a, b, `${vassal.name} rises against its overlord ${overlord.name}.`);
+    return true;
+  }
+  // After long, quiet rule a small, nearby tributary may be absorbed into its overlord.
+  if (sim.day - r.since > 2400 && r.tension < 55 && vassal.members.length < overlord.members.length * .5 && distance(overlord, vassal) < 30 && sim._random() < .08) {
+    annex(sim, r, overlord, vassal);
+    return true;
+  }
+  return false;
+}
+
+/** Peaceful absorption of a long-ruled tributary: its people join the overlord with their stores. */
+function annex(sim, r, overlord, vassal) {
+  const people = vassal.members.map(id => sim._agentMap.get(id)).filter(Boolean);
+  for (const agent of people) sim._joinGroup(agent, overlord);
+  overlord.food += vassal.food; overlord.wood += vassal.wood; vassal.food = 0; vassal.wood = 0;
+  for (const key of Object.keys(vassal.civilization.stock)) { overlord.civilization.stock[key] += vassal.civilization.stock[key]; vassal.civilization.stock[key] = 0; }
+  setStatus(sim, r, 'truce', overlord, vassal, `${overlord.name} has absorbed its long-ruled tributary ${vassal.name}.`);
+  sim._event('group', `${overlord.name} annexes ${vassal.name}; ${people.length} people become part of it.`, { groupId: overlord.id });
+}
+
 /** The conquered join the victors with everything they held; their buildings are lost. */
 function conquer(sim, r, strong, weak) {
   const people = weak.members.map(id => sim._agentMap.get(id)).filter(Boolean);
@@ -154,7 +311,7 @@ export function advanceDiplomacy(sim) {
   if (sim.day % 12 === 0) {
     for (let i = 0; i < sim.groups.length; i++) for (let j = i + 1; j < sim.groups.length; j++) {
       const a = sim.groups[i], b = sim.groups[j];
-      const range = 25 * Math.sqrt(innovationEffects(sim, a).trade * innovationEffects(sim, b).trade);
+      const range = 25 * Math.sqrt(innovationEffects(sim, a).trade * innovationEffects(sim, b).trade) * Math.max(industry(a).reach, industry(b).reach);
       if (distance(a, b) <= range) relation(sim, a, b, true).lastContact = sim.day;
     }
   }
@@ -168,15 +325,20 @@ export function advanceDiplomacy(sim) {
     const a = sim._groupMap.get(r.a), b = sim._groupMap.get(r.b);
     if (!a || !b) continue;
     const [ea, sa] = describe(a), [eb, sb] = describe(b);
-    const contact = distance(a, b) <= 25 * Math.sqrt(ea.trade * eb.trade);
+    const contact = !!linkBetween(sim, a, b) || distance(a, b) <= 25 * Math.sqrt(ea.trade * eb.trade) * Math.max(industry(a).reach, industry(b).reach);
     if (r.status === 'war') {
       r.warDays++;
-      if (contact && sim.day % 6 === 0) raid(sim, r, a, b, sa, sb);
+      if (contact && sim.day % 6 === 0) {
+        if (considerNuclearStrike(sim, r, a, b, sa, sb, ea, eb)) continue;
+        raid(sim, r, a, b, sa, sb);
+      }
       // Circumscription (Carneiro 1970): an overwhelmed side that cannot hold out is conquered.
       if (contact && r.warDays > 30 && sim.day % 6 === 0) {
         const [strong, weak, ss, ws] = sa.power >= sb.power ? [a, b, sa, sb] : [b, a, sb, sa];
         if (ws.adults.length < ss.adults.length * .35 && weak.members.length <= strong.members.length * .6 && ws.power < ss.power * .4 && sim._random() < .1) {
-          conquer(sim, r, strong, weak);
+          // Small peoples are absorbed; larger ones, or those already under another, are made to pay tribute.
+          if (weak.members.length >= 8 && !overlordOf(sim, weak)) subjugate(sim, r, strong, weak, `Defeated in war, ${weak.name} must send part of its harvest and goods to ${strong.name}.`);
+          else conquer(sim, r, strong, weak);
           continue;
         }
       }
@@ -186,6 +348,10 @@ export function advanceDiplomacy(sim) {
         r.tension = Math.min(r.tension, 45); r.trust = Math.max(r.trust, -.3);
         setStatus(sim, r, 'truce', a, b, !contact ? 'Migration has separated the communities.' : 'Losses, provisioning costs, and exhaustion outweigh further fighting.');
       }
+      continue;
+    }
+    if (r.status === 'tributary') {
+      if (sim.day % 30 === (Math.max(r.a, r.b)) % 30) tributaryMonth(sim, r, a, b, sa, sb, contact);
       continue;
     }
     if (sim.day % 12 !== 0 || !contact) continue;
@@ -208,7 +374,20 @@ export function advanceDiplomacy(sim) {
       + militancy * competition + opportunity * scarcity - openness * 1.3 - Math.max(0, r.trust) * 2 - (r.status === 'alliance' ? 2 : 0);
     r.tension = clamp(r.tension + pressure, 0, 100);
     r.trust = clamp(r.trust + .012 * (openness - scarcity) - doctrinalDistance * (1 - openness) * .009, -1, 1);
-    if (r.tension > 68 && sa.adults.length >= 3 && sb.adults.length >= 3 && sim._random() < .03 + militancy * .12) {
+    // Deterrence: two nuclear powers almost never choose war; a lone nuclear power is feared.
+    const deterrence = warheads(a) > 0 && warheads(b) > 0 ? .08 : warheads(a) > 0 || warheads(b) > 0 ? .5 : 1;
+    // Intimidation: an expansionist or martial power far stronger than a tense neighbour demands
+    // submission. The weak submit unless their own pride or allies make them fight.
+    const [strong, weak, ss, ws] = sa.power >= sb.power ? [a, b, sa, sb] : [b, a, sb, sa];
+    const strongNorms = strong.civilization.culture?.norms, weakNorms = weak.civilization.culture?.norms;
+    const ambition = strongNorms ? Math.max(strongNorms.expansion, strongNorms.martial) : .4;
+    if (r.status !== 'alliance' && r.tension > 30 && ws.power < ss.power * .5 && ws.adults.length >= 3 && ambition > .5 && !overlordOf(sim, weak) && !overlordOf(sim, strong)
+      && warheads(weak) < 1 && sim._random() < .04 * ambition * deterrence) {
+      if (sim._random() < .75 - (weakNorms?.martial ?? .5) * .5) subjugate(sim, r, strong, weak, `Facing overwhelming strength, ${weak.name} submits and agrees to pay tribute.`);
+      else setStatus(sim, r, 'war', a, b, `${weak.name} refuses to submit to ${strong.name}.`);
+      continue;
+    }
+    if (r.tension > 68 && sa.adults.length >= 3 && sb.adults.length >= 3 && sim._random() < (.03 + militancy * .12) * deterrence) {
       setStatus(sim, r, 'war', a, b, scarcity > .4 ? 'Competition for scarce provisions and accumulated grievances overcome restraint.' : 'Militant, closed doctrines and accumulated rivalry overcome restraint.');
     } else if (r.trust > .55 && r.tension < 20 && r.status !== 'alliance') {
       setStatus(sim, r, 'alliance', a, b, 'Trust, exchange, and openness support mutual cooperation.');
@@ -221,7 +400,7 @@ export function advanceDiplomacy(sim) {
 
 export function diplomacyStats(sim) {
   const state = sim.diplomacy;
-  return { wars: state?.relations.filter(r => r.status === 'war').length || 0, alliances: state?.relations.filter(r => r.status === 'alliance').length || 0, tradeRoutes: state?.relations.filter(r => r.status === 'trade' || (r.status === 'alliance' && r.tradeTotal > 0)).length || 0, warDeaths: state?.warDeaths || 0 };
+  return { nuclearStrikes: state?.nuclearStrikes || 0, tributaries: state?.relations.filter(r => r.status === 'tributary').length || 0, wars: state?.relations.filter(r => r.status === 'war').length || 0, alliances: state?.relations.filter(r => r.status === 'alliance').length || 0, tradeRoutes: state?.relations.filter(r => r.status === 'trade' || (r.status === 'alliance' && r.tradeTotal > 0)).length || 0, warDeaths: state?.warDeaths || 0 };
 }
 
 export function restoreDiplomacy(raw, sim) {
@@ -233,6 +412,8 @@ export function restoreDiplomacy(raw, sim) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.relations)) bad('state');
   const state = { relations: [] };
   for (const key of ['warsStarted', 'warDeaths', 'treaties', 'raids']) state[key] = number(raw[key], key, Number.MAX_SAFE_INTEGER, 0, true);
+  state.nuclearStrikes = raw.nuclearStrikes === undefined ? 0 : number(raw.nuclearStrikes, 'nuclear strikes', Number.MAX_SAFE_INTEGER, 0, true);
+  state.subjugations = raw.subjugations === undefined ? 0 : number(raw.subjugations, 'subjugations', Number.MAX_SAFE_INTEGER, 0, true);
   const seen = new Set();
   for (const r of raw.relations) {
     if (!r || typeof r !== 'object') bad('relation');
@@ -242,7 +423,14 @@ export function restoreDiplomacy(raw, sim) {
     state.relations.push({ a, b, trust: number(r.trust, 'trust', 1, -1), tension: number(r.tension, 'tension', 100), status: r.status,
       since: number(r.since, 'since', sim.day, 0, true), lastContact: number(r.lastContact, 'last contact', sim.day, 0, true), warDays: number(r.warDays, 'war days', sim.day, 0, true),
       casualties: number(r.casualties, 'casualties', state.warDeaths, 0, true), tradeTotal: number(r.tradeTotal, 'trade volume'), reason: r.reason });
+    if (r.status === 'tributary') {
+      if (r.overlord !== a && r.overlord !== b) bad('overlord');
+      state.relations.at(-1).overlord = r.overlord;
+    } else if (r.overlord !== undefined) bad('overlord');
   }
+  // A society pays tribute to one overlord at most.
+  const vassals = state.relations.filter(r => r.status === 'tributary').map(r => r.overlord === r.a ? r.b : r.a);
+  if (new Set(vassals).size !== vassals.length) bad('tributary with two overlords');
   if (state.relations.reduce((n, r) => n + r.casualties, 0) > state.warDeaths) bad('casualty accounting');
   return state;
 }

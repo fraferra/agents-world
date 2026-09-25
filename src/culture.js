@@ -6,7 +6,7 @@
  * colour collective decisions.
  */
 export const NORMS = Object.freeze(['innovation', 'tradition', 'collectivism', 'hierarchy', 'martial', 'mercantile', 'piety', 'expansion']);
-export const TIERS = Object.freeze(['Band', 'Village', 'Town', 'City']);
+export const TIERS = Object.freeze(['Band', 'Village', 'Town', 'City', 'Metropolis']);
 const NORM_LABELS = { innovation: 'Inventive', tradition: 'Traditional', collectivism: 'Communal', hierarchy: 'Hierarchical', martial: 'Martial', mercantile: 'Mercantile', piety: 'Devout', expansion: 'Expansionist' };
 const EFFECT_KEYS = ['food', 'gathering', 'crafting', 'healing', 'storage', 'trade', 'combat', 'learning', 'cohesion'];
 const MAX_CUSTOMS = 6, REGISTRY_LIMIT = 400;
@@ -55,15 +55,20 @@ function memberTargets(sim, group, effects) {
   const hardship = people.filter(agent => agent.psyche?.episodes.some(episode => ['disaster', 'loss', 'omen', 'illness', 'war', 'hardship'].includes(episode.type) && sim.day - episode.day < 240)).length / n;
   const atWar = sim.diplomacy?.relations.some(relation => relation.status === 'war' && (relation.a === group.id || relation.b === group.id)) ? 1 : 0;
   const tenure = culture?.leaderId ? Math.min(1, (sim.day - culture.leaderSince) / 2400) : 0;
-  const tier = (culture?.tier || 0) / 3;
+  // A metropolis is no more hierarchical than a city: industrial hierarchy is added below.
+  const tier = Math.min(1, (culture?.tier || 0) / 3);
+  // Industry loosens tradition and kinship obligations, sharpens class and commerce;
+  // computers and science go with secularisation; the bomb militarises the state.
+  const b = civ.buildings;
+  const industrial = Math.min(1, ((b.factory || 0) + (b.railway || 0) + (b.powerplant || 0)) / 3), information = b.datacenter ? 1 : 0, armed = b.silo ? 1 : 0;
   return {
-    innovation: clamp((p('openness') + mean(agent => agent.traits.curiosity)) / 2 * .7 + Math.min(1, inquiry * 3) * .3),
-    tradition: clamp(p('conscientiousness') * .5 + Math.min(1, mean(agent => agent.age) / 60) * .3 + Math.min(1, (sim.day - (culture?.founded ?? sim.day)) / 3600) * .2),
-    collectivism: clamp((mean(agent => agent.traits.cooperation) + v('belonging') + v('care')) / 3),
-    hierarchy: clamp(doctrine('authority') * .5 + tier * .3 + tenure * .2),
-    martial: clamp(doctrine('militancy') * .5 + atWar * .35 + mean(agent => agent.mind.riskTolerance) * .15),
-    mercantile: clamp(Math.min(1, civ.tradePartners.length / 4) * .4 + Math.min(1, (civ.buildings.market || 0)) * .2 + mean(agent => agent.mind.ambition) * .4),
-    piety: clamp(doctrine('spirituality') * .6 + hardship * .4),
+    innovation: clamp((p('openness') + mean(agent => agent.traits.curiosity)) / 2 * .7 + Math.min(1, inquiry * 3) * .3 + industrial * .08 + information * .1),
+    tradition: clamp(p('conscientiousness') * .5 + Math.min(1, mean(agent => agent.age) / 60) * .3 + Math.min(1, (sim.day - (culture?.founded ?? sim.day)) / 3600) * .2 - industrial * .12 - information * .08),
+    collectivism: clamp((mean(agent => agent.traits.cooperation) + v('belonging') + v('care')) / 3 - industrial * .08),
+    hierarchy: clamp(doctrine('authority') * .5 + tier * .3 + tenure * .2 + industrial * .06),
+    martial: clamp(doctrine('militancy') * .5 + atWar * .35 + mean(agent => agent.mind.riskTolerance) * .15 + armed * .1),
+    mercantile: clamp(Math.min(1, civ.tradePartners.length / 4) * .4 + Math.min(1, (civ.buildings.market || 0)) * .2 + mean(agent => agent.mind.ambition) * .4 + industrial * .1),
+    piety: clamp(doctrine('spirituality') * .6 + hardship * .4 - information * .12),
     expansion: clamp(mean(agent => agent.psyche?.expansion ?? .45) + (culture?.pressure ?? 0) * .3),
   };
 }
@@ -71,7 +76,7 @@ function memberTargets(sim, group, effects) {
 // ——— customs ———
 
 const DISHES = { wild: ['forest stew', 'berry cakes', 'foraged feasts'], crops: ['flatbread', 'harvest porridge', 'grain beer'], game: ['roast game', 'smoked venison', 'hunters’ feasts'], fish: ['smoked fish', 'salted fish', 'river feasts'], herd: ['cheese', 'milk and curds', 'herders’ stew'] };
-const CRAFTS = { bricks: ['patterned brickwork', { crafting: .06, cohesion: .03 }], cloth: ['dyed weaving', { trade: .06, crafting: .03 }], goods: ['painted pottery', { crafting: .05, trade: .03 }], tools: ['toolmakers’ guild', { crafting: .06, gathering: .03 }], metal: ['bronze casting', { crafting: .07, combat: .03 }], gems: ['gem carving', { trade: .08 }] };
+const CRAFTS = { machines: ['machine works', { crafting: .08, gathering: .03 }], electronics: ['tinkerers’ circles', { learning: .08, crafting: .02 }], bricks: ['patterned brickwork', { crafting: .06, cohesion: .03 }], cloth: ['dyed weaving', { trade: .06, crafting: .03 }], goods: ['painted pottery', { crafting: .05, trade: .03 }], tools: ['toolmakers’ guild', { crafting: .06, gathering: .03 }], metal: ['bronze casting', { crafting: .07, combat: .03 }], gems: ['gem carving', { trade: .08 }] };
 const RITES = {
   innovation: ['apprentice trials', { learning: .08 }], tradition: ['ancestor rites', { cohesion: .08, learning: -.02 }], collectivism: ['communal vows', { cohesion: .08, healing: .03 }],
   hierarchy: ['councils of elders', { cohesion: .05, storage: .03 }], martial: ['warrior initiations', { combat: .1 }], mercantile: ['market fairs', { trade: .1 }],
@@ -101,7 +106,8 @@ function possibleCustoms(sim, group) {
   const [norm, value] = Object.entries(culture.norms).sort((a, b) => b[1] - a[1])[0];
   if (value > .55) options.push({ kind: 'rite', basis: `rite:${norm}`, noun: RITES[norm][0], effects: RITES[norm][1] });
   const masonry = ['market', 'library', 'temple', 'hall', 'walls'].reduce((sum, key) => sum + (civ.buildings[key] || 0), 0);
-  if (masonry >= 2) options.push({ kind: 'architecture', basis: 'architecture:brick', noun: 'brick courtyards', effects: { storage: .04, cohesion: .04 } });
+  if ((civ.buildings.factory || 0) + (civ.buildings.railway || 0) >= 2) options.push({ kind: 'architecture', basis: 'architecture:iron', noun: 'iron-and-glass halls', effects: { storage: .05, trade: .04 } });
+  else if (masonry >= 2) options.push({ kind: 'architecture', basis: 'architecture:brick', noun: 'brick courtyards', effects: { storage: .04, cohesion: .04 } });
   else if (culture.tier >= 1 && civ.buildings.lumbermill) options.push({ kind: 'architecture', basis: 'architecture:timber', noun: 'longhouses', effects: { storage: .03, cohesion: .03 } });
   return options;
 }
@@ -166,6 +172,7 @@ export function customModifiers(state, group) {
 export function tierOf(group) {
   const civ = group.civilization, n = group.members.length;
   const built = Object.values(civ.buildings).reduce((a, b) => a + b, 0), known = civ.technologies;
+  if (n >= 40 && built >= 20 && civ.buildings.factory > 0 && known.includes('railways')) return 4;
   if (n >= 24 && built >= 12 && known.includes('masonry') && known.includes('governance')) return 3;
   if (n >= 12 && built >= 6 && known.includes('writing')) return 2;
   if (n >= 6 && built >= 2) return 1;
@@ -341,7 +348,7 @@ export function restoreCulture(raw, sim, known) {
   const leaderId = culture.leaderId === null ? null : num(culture.leaderId, 'leader', 1, sim.nextAgentId - 1, true);
   const parentId = culture.parentId === null ? null : num(culture.parentId, 'parent society', 1, sim.nextGroupId - 1, true);
   return {
-    norms: Object.fromEntries(NORMS.map(key => [key, num(norms[key], `norm ${key}`)])), customs, tier: num(culture.tier, 'tier', 0, 3, true), leaderId, leaderSince: num(culture.leaderSince, 'leader since', 0, sim.day, true), parentId,
+    norms: Object.fromEntries(NORMS.map(key => [key, num(norms[key], `norm ${key}`)])), customs, tier: num(culture.tier, 'tier', 0, TIERS.length - 1, true), leaderId, leaderSince: num(culture.leaderSince, 'leader since', 0, sim.day, true), parentId,
     founded: num(culture.founded, 'founding day', 0, sim.day, true), lastColony: num(culture.lastColony, 'last colony', 0, sim.day, true), lastCustom: num(culture.lastCustom, 'last custom', 0, sim.day, true),
     pressure: num(culture.pressure, 'land pressure'),
   };

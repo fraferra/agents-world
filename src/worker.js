@@ -7,10 +7,29 @@ let lastTime = performance.now();
 let lastSnapshot = 0;
 let accumulator = 0;
 let publishCost = 0;
+// What the page already holds, so each update carries only what changed:
+// ideas are append-only, the map changes slowly, and full minds are needed
+// only for the person being inspected.
+let detailId = null;
+let sentDiscoveries = 0;
+let staticTilesSent = false;
+let lastTiles = -Infinity;
+let visible = true;
+const TILE_INTERVAL = 3000;
 
-function publish() {
+function publish({ tiles = false } = {}) {
   const started = performance.now();
-  if (simulation) postMessage({ type: 'snapshot', snapshot: simulation.snapshot(), running, speed });
+  if (simulation) {
+    const snapshot = simulation.view({ detailId, discoveriesFrom: sentDiscoveries });
+    sentDiscoveries = simulation.innovation.discoveries.length;
+    let packed = null;
+    if (tiles || !staticTilesSent || started - lastTiles > TILE_INTERVAL) {
+      packed = simulation.packTiles(!staticTilesSent);
+      staticTilesSent = true; lastTiles = started;
+    }
+    const transfer = packed ? [...Object.values(packed.fields), packed.terrain, packed.elevation, packed.fertility].filter(Boolean).map(array => array.buffer) : [];
+    postMessage({ type: 'snapshot', snapshot, tiles: packed, running, speed }, transfer);
+  }
   lastSnapshot = performance.now();
   publishCost = lastSnapshot - started;
 }
@@ -22,6 +41,7 @@ self.onmessage = ({ data: { id, type, payload = {} } }) => {
       case 'init': {
         const next = payload.state ? Simulation.deserialize(payload.state) : new Simulation(payload.config);
         simulation = next;
+        sentDiscoveries = 0; staticTilesSent = false; detailId = null;
         running = payload.running !== false;
         accumulator = 0;
         lastTime = performance.now();
@@ -43,7 +63,7 @@ self.onmessage = ({ data: { id, type, payload = {} } }) => {
         running = false;
         accumulator = 0;
         simulation.step(1);
-        publish();
+        publish({ tiles: true });
         break;
       case 'configure':
         simulation.configure(payload);
@@ -51,7 +71,14 @@ self.onmessage = ({ data: { id, type, payload = {} } }) => {
         break;
       case 'intervene':
         simulation.intervene(payload.kind, payload.region === undefined || payload.region === null ? {} : { region: payload.region });
+        publish({ tiles: true });
+        break;
+      case 'inspect':
+        detailId = Number.isSafeInteger(payload.id) ? payload.id : null;
         publish();
+        break;
+      case 'visible':
+        visible = payload.visible !== false;
         break;
       case 'serialize':
         result = simulation.serialize();
@@ -82,7 +109,8 @@ function advance() {
       }
       // Large populations slow wall-clock playback and observation frequency;
       // the simulation never suppresses births or drops inhabitants to keep up.
-      if (now - lastSnapshot > Math.max(140, publishCost * 4)) publish();
+      // A hidden tab needs only occasional updates.
+      if (now - lastSnapshot > (visible ? Math.max(140, publishCost * 4) : 5000)) publish();
     }
   } catch (error) {
     running = false;

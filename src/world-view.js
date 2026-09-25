@@ -1,10 +1,33 @@
 // A small, dependency-free atlas renderer. Simulation coordinates remain in
 // tiles; the camera and illustration never change the simulation itself.
+import { farmRadius, industry } from './civilization.js';
+
 const TILE = 16;
 const OCEAN = '#587c79';
 const TAU = Math.PI * 2;
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const lerp = (a, b, n) => a + (b - a) * n;
+
+const built = group => Object.values(group.civilization?.buildings || {}).reduce((a, b) => a + b, 0);
+/**
+ * How developed a settlement looks: 0 camp, 1 village, 2 brick town, 3 stone city,
+ * 4 industrial town, 5 modern city with electric light.
+ */
+function eraOf(group) {
+  const civ = group.civilization, b = civ?.buildings;
+  if (!b || !built(group)) return 0;
+  if ((b.datacenter || b.powerplant || b.reactor) && industry(group).powered) return 5;
+  if (b.factory || b.railway) return 4;
+  const tier = civ.culture?.tier || 0;
+  if (tier >= 3) return 3;
+  if (tier >= 2 || (b.kiln && civ.technologies.includes('brickmaking'))) return 2;
+  return 1;
+}
+/** Radius of the built-up area, in tiles. */
+function urbanRadius(group) {
+  const era = eraOf(group);
+  return era ? 0.9 + Math.sqrt(group.members.length) * 0.32 + era * 0.35 : 0;
+}
 
 function withAlpha(color, alpha) {
   const hex = color.replace('#', '');
@@ -114,6 +137,7 @@ export class WorldView {
     this.snapshot = snapshot;
     // Interventions can change resources without advancing the day.
     this.overlayKey = '';
+    this.developmentKey = '';
     this.groups = new Map(snapshot.groups.map(group => [group.id, group]));
     const alive = new Set();
     for (const agent of snapshot.agents) {
@@ -124,6 +148,7 @@ export class WorldView {
     for (const id of this.positions.keys()) if (!alive.has(id)) this.positions.delete(id);
     if (this.followId !== null && !alive.has(this.followId)) this.followId = null;
     if (newWorld) {
+      this.developmentCanvas = null;
       this.buildTerrain();
       this.resetView();
       this.overlayKey = '';
@@ -399,6 +424,135 @@ export class WorldView {
     this.terrainCanvas = canvas;
   }
 
+  /**
+   * What people have done to the land, redrawn as the map updates: cleared
+   * woodland, quarries and mines, fields around farming towns (browner as the
+   * soil tires), built-up ground and streets, and smoke over industry.
+   */
+  buildDevelopment() {
+    const { width, height, tiles, groups, tilesVersion = 0, day } = this.snapshot;
+    const key = `${tilesVersion}:${Math.floor(day / 30)}:${groups.length}:${groups.reduce((sum, group) => sum + built(group), 0)}`;
+    if (key === this.developmentKey && this.developmentCanvas) return;
+    this.developmentKey = key;
+    const unit = this.rasterTile;
+    const canvas = this.developmentCanvas || canvasOf(width * unit, height * unit);
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < tiles.length; i++) {
+      const tile = tiles[i];
+      if (tile.terrain === 'water') continue;
+      const tx = i % width, ty = Math.floor(i / width), x = tx * unit, y = ty * unit;
+      if (tile.terrain === 'forest' && tile.wood < 0.35) {
+        // Felled woodland: open ground with stumps where trees stood.
+        ctx.fillStyle = `rgba(176,170,120,${(1 - tile.wood / 0.35) * 0.82})`;
+        ctx.fillRect(x, y, unit, unit);
+        if (random(tx, ty, 41) < 0.5) { ctx.fillStyle = 'rgba(116,98,70,.7)'; ctx.fillRect(x + unit * 0.3, y + unit * 0.5, Math.max(1, unit * 0.14), Math.max(1, unit * 0.14)); }
+      }
+      if ((tile.worked || 0) > 0.15) {
+        // Quarries, pits and mines.
+        const w = Math.min(1, tile.worked);
+        ctx.fillStyle = `rgba(120,108,92,${0.25 + w * 0.5})`;
+        ctx.beginPath(); ctx.ellipse(x + unit / 2, y + unit / 2, unit * (0.2 + w * 0.3), unit * (0.14 + w * 0.2), 0, 0, TAU); ctx.fill();
+      }
+    }
+    for (const group of groups) {
+      const b = group.civilization?.buildings;
+      if (!b) continue;
+      const urban = urbanRadius(group), era = eraOf(group);
+      if (b.farm || b.pasture) {
+        // Cultivated land around the town, out to the fields its farms can work.
+        const reach = Math.min(farmRadius(group), 2 + Math.sqrt((b.farm || 0) + (b.pasture || 0) * 0.6) * 2.4);
+        for (let dy = -Math.ceil(reach); dy <= reach; dy++) for (let dx = -Math.ceil(reach); dx <= reach; dx++) {
+          const d = Math.hypot(dx, dy);
+          if (d > reach || d < urban) continue;
+          const tx = Math.floor(group.x) + dx, ty = Math.floor(group.y) + dy;
+          if (tx < 0 || ty < 0 || tx >= width || ty >= height) continue;
+          const tile = tiles[ty * width + tx];
+          if (tile.terrain === 'water' || tile.terrain === 'mountain') continue;
+          const soil = tile.soil ?? tile.fertility, pasture = random(tx, ty, 43) < (b.pasture || 0) / Math.max(1, (b.farm || 0) + (b.pasture || 0));
+          const rich = clamp(soil / Math.max(0.2, tile.fertility), 0, 1);
+          const [r, g, bl] = pasture ? [150, 176, 110] : [lerp(168, 214, rich), lerp(142, 192, rich), lerp(98, 108, rich)];
+          ctx.fillStyle = `rgba(${r | 0},${g | 0},${bl | 0},.78)`;
+          ctx.fillRect(tx * unit, ty * unit, unit, unit);
+          if (!pasture && unit >= 4) {
+            ctx.strokeStyle = 'rgba(120,112,74,.35)'; ctx.lineWidth = 1;
+            const across = random(tx, ty, 44) < 0.5;
+            ctx.beginPath();
+            for (let row = 1; row < 3; row++) {
+              if (across) { ctx.moveTo(tx * unit, ty * unit + row * unit / 3); ctx.lineTo(tx * unit + unit, ty * unit + row * unit / 3); }
+              else { ctx.moveTo(tx * unit + row * unit / 3, ty * unit); ctx.lineTo(tx * unit + row * unit / 3, ty * unit + unit); }
+            }
+            ctx.stroke();
+          }
+        }
+      }
+      if (urban) {
+        // Built-up ground: trodden earth, then cobbles, then stone and asphalt.
+        const ground = ['#b9a983', '#b9a983', '#b8a58a', '#aaa596', '#8f8b84', '#85888a'][era];
+        const r = urban * unit;
+        ctx.fillStyle = withAlpha(ground, 'd9');
+        ctx.beginPath(); ctx.ellipse(group.x * unit, group.y * unit, r, r * 0.78, 0, 0, TAU); ctx.fill();
+        if (era >= 2 && unit >= 4) {
+          ctx.save();
+          ctx.beginPath(); ctx.ellipse(group.x * unit, group.y * unit, r, r * 0.78, 0, 0, TAU); ctx.clip();
+          ctx.strokeStyle = era >= 4 ? 'rgba(70,70,72,.55)' : 'rgba(140,124,96,.55)'; ctx.lineWidth = Math.max(1, unit * 0.12);
+          const step = unit * (era >= 4 ? 1.1 : 1.6);
+          ctx.beginPath();
+          for (let gx = group.x * unit - r; gx < group.x * unit + r; gx += step) { ctx.moveTo(gx, group.y * unit - r); ctx.lineTo(gx, group.y * unit + r); }
+          for (let gy = group.y * unit - r; gy < group.y * unit + r; gy += step) { ctx.moveTo(group.x * unit - r, gy); ctx.lineTo(group.x * unit + r, gy); }
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+      const smog = industry(group).smog;
+      if (smog > 0) {
+        const r = (5 + smog * 4) * unit;
+        const haze = ctx.createRadialGradient(group.x * unit, group.y * unit, r * 0.1, group.x * unit, group.y * unit, r);
+        haze.addColorStop(0, `rgba(96,92,86,${0.18 + smog * 0.3})`);
+        haze.addColorStop(1, 'rgba(96,92,86,0)');
+        ctx.fillStyle = haze;
+        ctx.fillRect(group.x * unit - r, group.y * unit - r, r * 2, r * 2);
+      }
+    }
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(this.landMask, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    this.developmentCanvas = canvas;
+  }
+
+  /** Roads and railways between the settlements they join. */
+  drawRoutes(ctx) {
+    const groups = this.groups;
+    for (const link of this.snapshot.infrastructure?.links || []) {
+      const a = groups.get(link.a), b = groups.get(link.b);
+      if (!a || !b) continue;
+      if (Math.max(a.x, b.x) < this.viewport.left - 2 || Math.min(a.x, b.x) > this.viewport.right + 2 ||
+          Math.max(a.y, b.y) < this.viewport.top - 2 || Math.min(a.y, b.y) > this.viewport.bottom + 2) continue;
+      ctx.save();
+      ctx.lineCap = 'round';
+      if (link.kind === 'rail') {
+        const length = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / length, ny = (b.x - a.x) / length;
+        ctx.strokeStyle = 'rgba(92,78,62,.85)'; ctx.lineWidth = 0.14;
+        ctx.beginPath();
+        for (let t = 0; t <= length; t += 0.55) {
+          const x = a.x + (b.x - a.x) * t / length, y = a.y + (b.y - a.y) * t / length;
+          ctx.moveTo(x - nx * 0.22, y - ny * 0.22); ctx.lineTo(x + nx * 0.22, y + ny * 0.22);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = '#4b4a4c'; ctx.lineWidth = 0.08;
+        for (const side of [-0.12, 0.12]) {
+          ctx.beginPath(); ctx.moveTo(a.x + nx * side, a.y + ny * side); ctx.lineTo(b.x + nx * side, b.y + ny * side); ctx.stroke();
+        }
+      } else {
+        ctx.strokeStyle = 'rgba(128,112,82,.55)'; ctx.lineWidth = 0.46;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.strokeStyle = 'rgba(222,208,164,.9)'; ctx.lineWidth = 0.28;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
   buildOverlay() {
     const { width, height, tiles, groups, day } = this.snapshot;
     const key = `${this.overlay}:${day}:${groups.length}`;
@@ -436,6 +590,8 @@ export class WorldView {
         // Clay banks, fishing grounds and gem seams, then stone and ore.
         if (tile.clay > 0.45) { ctx.fillStyle = 'rgba(190,120,82,.45)'; ctx.fillRect(x - unit * 0.18, y - unit * 0.18, unit * 0.36, unit * 0.36); }
         if (tile.fish > 0.45) { ctx.strokeStyle = 'rgba(96,142,160,.8)'; ctx.lineWidth = unit * 0.07; ctx.beginPath(); ctx.arc(x, y, unit * 0.22, 0, Math.PI); ctx.stroke(); }
+        if (tile.uranium > 0.12) { ctx.fillStyle = '#9fc25a'; ctx.beginPath(); ctx.arc(x, y, unit * (0.12 + tile.uranium * 0.14), 0, Math.PI * 2); ctx.fill(); continue; }
+        if (tile.coal > 0.2) { ctx.fillStyle = `rgba(52,50,48,${0.35 + tile.coal * 0.45})`; const c = unit * (0.12 + tile.coal * 0.14); ctx.fillRect(x - c, y - c * 0.6, c * 2, c * 1.2); }
         if (tile.gems > 0.15) { ctx.fillStyle = '#9d7fbf'; const g = unit * (0.14 + tile.gems * 0.14); ctx.beginPath(); ctx.moveTo(x, y - g); ctx.lineTo(x + g * 0.8, y); ctx.lineTo(x, y + g); ctx.lineTo(x - g * 0.8, y); ctx.closePath(); ctx.fill(); continue; }
         if (tile.ore > 0.18 || tile.stone > 0.48) {
           const ore = tile.ore > 0.18;
@@ -468,8 +624,10 @@ export class WorldView {
     this.overlayCanvas = canvas;
   }
 
-  drawSettlement(ctx, group) {
-    this.drawIndustry(ctx, group);
+  drawSettlement(ctx, group, time = 0) {
+    this.drawIndustry(ctx, group, time);
+    const era = eraOf(group);
+    if (era >= 2) { this.drawTown(ctx, group, era, time); return; }
     const count = clamp(group.shelters || 0, 0, 9);
     if (!count) {
       // A meeting place appears before the first permanent building.
@@ -510,10 +668,75 @@ export class WorldView {
     }
   }
 
-  drawIndustry(ctx, group) {
+  /** A town drawn in the style of its age, one house for about every three people. */
+  drawTown(ctx, group, era, time) {
+    const count = clamp(Math.max(group.shelters || 0, Math.ceil(group.members.length / 3)), 1, 40);
+    const spread = urbanRadius(group) * 0.92;
+    const houses = [];
+    for (let i = 0; i < count; i++) {
+      const angle = i * 2.39996 + group.id;
+      const distance = i === 0 ? 0 : spread * Math.sqrt(i / count);
+      const x = group.x + Math.cos(angle) * distance, y = group.y + Math.sin(angle) * distance * 0.72;
+      const tx = Math.floor(x), ty = Math.floor(y);
+      if (tx < 0 || ty < 0 || tx >= this.snapshot.width || ty >= this.snapshot.height || this.snapshot.tiles[ty * this.snapshot.width + tx]?.terrain === 'water') continue;
+      houses.push({ x, y, i });
+    }
+    houses.sort((a, b) => a.y - b.y);
+    const lit = era === 5;
+    for (const { x, y, i } of houses) {
+      const r = random(Math.round(x * 10), Math.round(y * 10), 51);
+      ellipse(ctx, x + 0.14, y + 0.3, 0.6, 0.2, 'rgba(59,69,43,.22)');
+      if (era === 5) {
+        // Modern towers of steel and glass, windows lit.
+        const w = 0.46 + r * 0.24, h = i === 0 ? 2.4 : 0.9 + r * 1.3;
+        ctx.fillStyle = r < 0.5 ? '#9aaab6' : '#aeb7bb'; ctx.fillRect(x - w / 2, y - h, w, h + 0.3);
+        ctx.fillStyle = '#7d8c97'; ctx.fillRect(x + w / 2 - 0.12, y - h, 0.12, h + 0.3);
+        ctx.fillStyle = lit ? 'rgba(248,230,160,.9)' : '#d9e3e8';
+        for (let wy = y - h + 0.15; wy < y + 0.1; wy += 0.24) for (let wx = x - w / 2 + 0.08; wx < x + w / 2 - 0.16; wx += 0.14) if (random(Math.round(wx * 50), Math.round(wy * 50), 52) < 0.6) ctx.fillRect(wx, wy, 0.07, 0.1);
+      } else if (era === 4) {
+        // Industrial rowhouses in dark brick with chimney pots.
+        ctx.fillStyle = '#90604b'; ctx.fillRect(x - 0.5, y - 0.3, 1, 0.66);
+        ctx.fillStyle = '#4f4b4b'; ctx.beginPath(); ctx.moveTo(x - 0.58, y - 0.26); ctx.lineTo(x - 0.4, y - 0.62); ctx.lineTo(x + 0.4, y - 0.62); ctx.lineTo(x + 0.58, y - 0.26); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#6b4d40'; ctx.fillRect(x + 0.2, y - 0.86, 0.12, 0.3);
+        ctx.fillStyle = '#e8d49a'; ctx.fillRect(x - 0.34, y - 0.15, 0.14, 0.16); ctx.fillRect(x + 0.08, y - 0.15, 0.14, 0.16);
+        if (i % 4 === 0) this.drawSmoke(ctx, x + 0.26, y - 0.9, time, 'rgba(120,116,110,', 0.5, i);
+      } else if (era === 3) {
+        // Stone city houses, two and three storeys under slate.
+        const h = 0.7 + r * 0.4;
+        ctx.fillStyle = '#ddd5c2'; ctx.fillRect(x - 0.45, y - h + 0.35, 0.9, h);
+        ctx.fillStyle = '#c3baa5'; ctx.fillRect(x + 0.22, y - h + 0.35, 0.23, h);
+        ctx.fillStyle = '#6e7580'; ctx.beginPath(); ctx.moveTo(x - 0.55, y - h + 0.38); ctx.lineTo(x, y - h - 0.12); ctx.lineTo(x + 0.55, y - h + 0.38); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#f1dba0'; for (let floor = 0; floor < 2; floor++) { ctx.fillRect(x - 0.3, y - h + 0.5 + floor * 0.3, 0.14, 0.14); ctx.fillRect(x + 0.02, y - h + 0.5 + floor * 0.3, 0.14, 0.14); }
+      } else {
+        // Brick town houses under red tile.
+        ctx.fillStyle = '#c9a07e'; ctx.fillRect(x - 0.42, y - 0.18, 0.84, 0.56);
+        ctx.fillStyle = '#b38a6b'; ctx.fillRect(x + 0.18, y - 0.18, 0.24, 0.56);
+        ctx.fillStyle = r < 0.5 ? '#a4533f' : '#b3604a'; ctx.beginPath(); ctx.moveTo(x - 0.55, y - 0.12); ctx.lineTo(x - 0.02, y - 0.62); ctx.lineTo(x + 0.53, y - 0.12); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#72594a'; ctx.fillRect(x - 0.1, y + 0.05, 0.19, 0.33);
+        ctx.fillStyle = '#f2d893'; ctx.fillRect(x - 0.33, y - 0.02, 0.13, 0.14);
+      }
+    }
+    // The society's banner flies over its centre.
+    ctx.strokeStyle = '#6b654f'; ctx.lineWidth = 0.05;
+    ctx.beginPath(); ctx.moveTo(group.x, group.y - 0.1); ctx.lineTo(group.x, group.y - (era === 5 ? 3 : 1.6)); ctx.stroke();
+    ctx.fillStyle = group.color; ctx.fillRect(group.x, group.y - (era === 5 ? 3 : 1.6), 0.45, 0.26);
+  }
+
+  /** Rising, fading smoke; `tint` is an rgba prefix such as 'rgba(120,116,110,'. */
+  drawSmoke(ctx, x, y, time, tint, scale = 1, seed = 0) {
+    for (let k = 0; k < 4; k++) {
+      const phase = ((time / 1000) * 0.3 + k / 4 + seed * 0.137) % 1;
+      const drift = Math.sin(phase * 3 + seed) * 0.25 * scale + phase * 0.5 * scale;
+      ctx.fillStyle = `${tint}${(1 - phase) * 0.5})`;
+      ctx.beginPath(); ctx.arc(x + drift, y - phase * 1.8 * scale, (0.14 + phase * 0.4) * scale, 0, TAU); ctx.fill();
+    }
+  }
+
+  drawIndustry(ctx, group, time = 0) {
     const buildings = group.civilization?.buildings;
     if (!buildings) return;
-    const kinds = ['farm', 'pasture', 'granary', 'workshop', 'lumbermill', 'kiln', 'forge', 'school', 'clinic', 'fishery', 'loom', 'apothecary', 'market', 'library', 'temple', 'observatory', 'hall', 'dock'];
+    const kinds = ['farm', 'pasture', 'granary', 'workshop', 'lumbermill', 'kiln', 'forge', 'school', 'clinic', 'fishery', 'loom', 'apothecary', 'market', 'library', 'temple', 'observatory', 'hall', 'dock', 'factory', 'railway', 'hospital', 'powerplant', 'datacenter', 'reactor', 'silo'];
+    const modern = industry(group), inner = urbanRadius(group);
     if (buildings.walls) {
       // Walls ring the whole settlement.
       ctx.strokeStyle = 'rgba(140,128,104,.85)'; ctx.lineWidth = 0.32; ctx.setLineDash([0.9, 0.35]);
@@ -523,12 +746,12 @@ export class WorldView {
     for (const kind of kinds) {
       // Several illustrations represent a developed district; exact building
       // counts are available in its society inspector.
-      const count = clamp(Math.floor(buildings[kind] || 0), 0, kind === 'farm' || kind === 'pasture' ? 4 : ['temple', 'observatory', 'hall', 'dock', 'library', 'market'].includes(kind) ? 1 : 3);
+      const count = clamp(Math.floor(buildings[kind] || 0), 0, kind === 'farm' || kind === 'pasture' ? 4 : ['temple', 'observatory', 'hall', 'dock', 'library', 'market', 'railway', 'datacenter', 'reactor', 'silo'].includes(kind) ? 1 : 3);
       for (let i = 0; i < count; i++, slot++) {
         let position = null;
         for (let attempt = 0; attempt < 12; attempt++) {
           const angle = (slot + attempt * 0.31) * 2.39996 + group.id;
-          const radius = 3.1 + Math.sqrt(slot) * 1.12 + attempt * 0.15;
+          const radius = Math.max(3.1, inner + 0.9) + Math.sqrt(slot) * 1.12 + attempt * 0.15;
           const x = group.x + Math.cos(angle) * radius;
           const y = group.y + Math.sin(angle) * radius * 0.72;
           if (x < 1.7 || y < 1.7 || x >= this.snapshot.width - 1.7 || y >= this.snapshot.height - 1.7) continue;
@@ -547,6 +770,8 @@ export class WorldView {
           ctx.fillStyle = '#a9b97c'; ctx.fillRect(-1.5, -0.95, 3, 1.9);
           ctx.strokeStyle = '#8a7652'; ctx.lineWidth = 0.1; ctx.strokeRect(-1.5, -0.95, 3, 1.9);
           for (const [ax, ay] of [[-0.8, -0.3], [0.3, 0.2], [0.9, -0.45]]) ellipse(ctx, ax, ay, 0.22, 0.14, '#f1ead2');
+        } else if (['factory', 'railway', 'hospital', 'powerplant', 'datacenter', 'reactor', 'silo'].includes(kind)) {
+          this.drawModern(ctx, kind, modern, time, slot);
         } else if (kind === 'farm') {
           ctx.fillStyle = '#b7ab72'; ctx.fillRect(-1.5, -0.95, 3, 1.9);
           ctx.strokeStyle = '#e3d09a'; ctx.lineWidth = 0.12;
@@ -628,6 +853,55 @@ export class WorldView {
     }
   }
 
+  /** Industrial and modern buildings, drawn at the origin of the current transform. */
+  drawModern(ctx, kind, modern, time, seed) {
+    ellipse(ctx, 0.15, 0.55, 1.2, 0.3, 'rgba(59,69,43,.24)');
+    if (kind === 'factory') {
+      ctx.fillStyle = '#8a6d5d'; ctx.fillRect(-1, -0.25, 2, 0.8);
+      ctx.fillStyle = '#5c5856';
+      for (let tooth = 0; tooth < 4; tooth++) { ctx.beginPath(); ctx.moveTo(-1 + tooth * 0.5, -0.25); ctx.lineTo(-1 + tooth * 0.5, -0.65); ctx.lineTo(-0.5 + tooth * 0.5, -0.25); ctx.closePath(); ctx.fill(); }
+      ctx.fillStyle = '#9fb6c0'; for (let tooth = 0; tooth < 4; tooth++) ctx.fillRect(-0.98 + tooth * 0.5, -0.62, 0.06, 0.36);
+      ctx.fillStyle = '#6b5a52'; ctx.fillRect(0.72, -1.5, 0.2, 1.3);
+      ctx.fillStyle = '#e3c27f'; for (let w = 0; w < 4; w++) ctx.fillRect(-0.85 + w * 0.45, 0.05, 0.2, 0.18);
+      this.drawSmoke(ctx, 0.82, -1.55, time, 'rgba(92,88,84,', 1, seed);
+    } else if (kind === 'railway') {
+      ctx.strokeStyle = '#4b4a4c'; ctx.lineWidth = 0.07;
+      for (const offset of [0.42, 0.62]) { ctx.beginPath(); ctx.moveTo(-1.4, offset); ctx.lineTo(1.4, offset); ctx.stroke(); }
+      ctx.fillStyle = '#b89b78'; ctx.fillRect(-0.8, -0.35, 1.6, 0.65);
+      ctx.fillStyle = '#6d6a6e'; ctx.beginPath(); ctx.ellipse(0, -0.35, 0.9, 0.35, 0, Math.PI, TAU); ctx.fill();
+      ctx.fillStyle = '#e9dcb0'; ctx.fillRect(-0.12, -0.2, 0.24, 0.3);
+      ctx.fillStyle = '#3f3d3e'; ctx.fillRect(0.9, 0.18, 0.5, 0.3); ctx.fillRect(1.25, 0.02, 0.1, 0.18);
+      this.drawSmoke(ctx, 1.3, -0.02, time, 'rgba(200,200,196,', 0.6, seed);
+    } else if (kind === 'hospital') {
+      ctx.fillStyle = '#efebe1'; ctx.fillRect(-0.85, -0.55, 1.7, 1.05);
+      ctx.fillStyle = '#d7d1c3'; ctx.fillRect(0.55, -0.55, 0.3, 1.05);
+      ctx.fillStyle = '#c0493f'; ctx.fillRect(-0.11, -0.45, 0.22, 0.6); ctx.fillRect(-0.3, -0.26, 0.6, 0.22);
+      ctx.fillStyle = '#9fb6c0'; for (let w = 0; w < 3; w++) ctx.fillRect(-0.75 + w * 0.55, 0.22, 0.2, 0.16);
+    } else if (kind === 'powerplant') {
+      for (const tx of [-0.55, 0.45]) {
+        ctx.fillStyle = '#b9b8b0'; ctx.beginPath(); ctx.moveTo(tx - 0.45, 0.5); ctx.quadraticCurveTo(tx - 0.2, -0.3, tx - 0.32, -1.1); ctx.lineTo(tx + 0.32, -1.1); ctx.quadraticCurveTo(tx + 0.2, -0.3, tx + 0.45, 0.5); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#9d9c95'; ctx.fillRect(tx + 0.12, -1.1, 0.2, 1.6);
+        if (modern.powered) this.drawSmoke(ctx, tx, -1.2, time, modern.smog > 0 ? 'rgba(110,106,100,' : 'rgba(240,240,236,', 1.1, seed + tx);
+      }
+    } else if (kind === 'datacenter') {
+      ctx.fillStyle = '#6f93a8'; ctx.fillRect(-0.8, -0.9, 1.6, 1.4);
+      ctx.strokeStyle = 'rgba(214,232,240,.8)'; ctx.lineWidth = 0.04;
+      ctx.beginPath(); for (let g = -0.6; g < 0.8; g += 0.3) { ctx.moveTo(g, -0.9); ctx.lineTo(g, 0.5); } for (let g = -0.6; g < 0.5; g += 0.3) { ctx.moveTo(-0.8, g); ctx.lineTo(0.8, g); } ctx.stroke();
+      if (modern.powered && Math.floor(time / 500) % 2) { ctx.fillStyle = '#9ef0a0'; ctx.fillRect(0.55, -0.8, 0.1, 0.1); }
+    } else if (kind === 'reactor') {
+      ctx.fillStyle = '#cfcabe'; ctx.fillRect(-0.7, -0.3, 1.4, 0.8);
+      ellipse(ctx, 0, -0.3, 0.7, 0.62, '#dcd8cc');
+      ctx.fillStyle = '#b9b8b0'; ctx.fillRect(0.9, -1.2, 0.35, 1.7);
+      ctx.fillStyle = '#e4c24a'; ctx.beginPath(); ctx.arc(0, -0.35, 0.16, 0, TAU); ctx.fill();
+      if (modern.powered) this.drawSmoke(ctx, 1.07, -1.3, time, 'rgba(244,244,240,', 0.9, seed);
+    } else if (kind === 'silo') {
+      ellipse(ctx, 0, 0.1, 0.95, 0.5, '#9a9a88');
+      ellipse(ctx, 0, 0.05, 0.55, 0.3, '#5e5e56');
+      ellipse(ctx, 0, 0.05, 0.3, 0.16, '#3d3d38');
+      ctx.strokeStyle = '#c9b44a'; ctx.lineWidth = 0.06; ctx.beginPath(); ctx.ellipse(0, 0.1, 0.8, 0.42, 0, 0, TAU); ctx.stroke();
+    }
+  }
+
   visible(x, y, padding = 0) {
     const view = this.viewport;
     return !view || (x >= view.left - padding && x <= view.right + padding && y >= view.top - padding && y <= view.bottom + padding);
@@ -699,7 +973,7 @@ export class WorldView {
 
   drawRelations(ctx) {
     const groups = new Map(this.snapshot.groups.map(group => [group.id, group]));
-    const colors = { neutral: '#dfdfcc', trade: '#f4d18e', alliance: '#b6e5bc', war: '#e69978', truce: '#bedee3' };
+    const colors = { neutral: '#dfdfcc', trade: '#f4d18e', alliance: '#b6e5bc', war: '#e69978', truce: '#bedee3', tributary: '#c7a5dd' };
     ctx.save();
     for (const relation of this.snapshot.diplomacy?.relations || []) {
       const a = groups.get(relation.a), b = groups.get(relation.b);
@@ -850,14 +1124,17 @@ export class WorldView {
     ctx.scale(this.scale, this.scale);
     ctx.imageSmoothingEnabled = true;
     this.drawCachedLayer(ctx, this.terrainCanvas);
+    this.buildDevelopment();
+    this.drawCachedLayer(ctx, this.developmentCanvas);
     if (['food', 'societies', 'industry'].includes(this.overlay)) {
       this.buildOverlay();
       this.drawCachedLayer(ctx, this.overlayCanvas);
     }
     this.drawRegionLabels(ctx);
+    this.drawRoutes(ctx);
     if (this.overlay === 'relations') this.drawRelations(ctx);
     for (const group of this.snapshot.groups) {
-      if (this.visible(group.x, group.y, 14)) this.drawSettlement(ctx, group);
+      if (this.visible(group.x, group.y, 18)) this.drawSettlement(ctx, group, time);
     }
     if (this.overlay === 'knowledge') this.drawCommunication(ctx, time);
     const ordered = this.snapshot.agents.filter(agent => {

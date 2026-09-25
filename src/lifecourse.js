@@ -9,6 +9,8 @@
  * infertility that is longer for mobile foragers than for settled farmers
  * (Bocquet-Appel's Neolithic Demographic Transition). See REALISM.md.
  */
+import { industry } from './civilization.js';
+
 export const SILER = Object.freeze({
   forager: Object.freeze({ a1: .422, b1: 1.131, a2: .013, a3: 1.47e-4, b3: .086 }),
   acculturated: Object.freeze({ a1: .248, b1: .816, a2: .006, a3: 1.78e-4, b3: .079 }),
@@ -45,8 +47,11 @@ export function careLevel(group) {
   const civ = group?.civilization;
   if (!civ) return 0;
   const known = civ.technologies, b = civ.buildings;
+  // Germ theory and hospitals carry care past what herbal medicine can reach; above 1,
+  // hazards fall below the acculturated values (see annualHazard).
   return clamp((known.includes('herbalism') ? .12 : 0) + (known.includes('medicine') ? .3 : 0) + Math.min(2, b.clinic || 0) * .15 + Math.min(1, b.apothecary || 0) * .08
-    + Math.min(1, (civ.stock.remedies || 0) / Math.max(1, group.members.length * .15)) * .1);
+    + Math.min(1, (civ.stock.remedies || 0) / Math.max(1, group.members.length * .15)) * .1
+    + (known.includes('vaccination') ? .25 : 0) + Math.min(2, b.hospital || 0) * .2, 0, 1.6);
 }
 
 /**
@@ -60,14 +65,18 @@ export function diseaseLoad(group) {
   const sedentism = Math.min(1, built / 6);
   const crowding = Math.min(1.5, group.members.length / 60);
   const livestock = Math.min(1, (civ.buildings.pasture || 0) * .35);
-  return Math.max(0, sedentism * .25 + crowding * .35 + livestock * .3) * (1 - careLevel(group) * .6);
+  // Coal smoke from factories and power stations; medicine cannot clean the air.
+  return Math.max(0, sedentism * .25 + crowding * .35 + livestock * .3) * Math.max(.1, 1 - careLevel(group) * .6) + industry(group).smog * .25;
 }
 
 /** Annual mortality hazard for a person, from Siler components adjusted for their circumstances. */
 export function annualHazard(agent, group, day) {
   const care = careLevel(group), load = diseaseLoad(group);
   const f = SILER.forager, m = SILER.acculturated;
-  let a1 = lerp(f.a1, m.a1, care), b1 = lerp(f.b1, m.b1, care), a2 = lerp(f.a2, m.a2, care);
+  const herbal = Math.min(1, care), modern = Math.max(0, care - 1);
+  let a1 = lerp(f.a1, m.a1, herbal), b1 = lerp(f.b1, m.b1, herbal), a2 = lerp(f.a2, m.a2, herbal);
+  // Vaccination and hospitals cut infant and background deaths far below what herbal care can.
+  a1 *= 1 - modern * 1.2; a2 *= 1 - modern * .9;
   a1 *= 1 + load * .8; a2 *= 1 + load * .6;
   if (group?.civilization.outbreakUntil > day) a2 += .04 * (1 - care * .6);
   // Hunger raises the risk of dying from everything else, above all for the young.

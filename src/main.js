@@ -117,9 +117,30 @@ $('#world-canvas').addEventListener('pointermove', event => {
 });
 $('#world-canvas').addEventListener('pointerleave', () => { $('#map-tooltip').hidden = true; });
 
+// The page keeps one copy of the map and of the idea registry and updates them in
+// place: tiles arrive as typed arrays every few seconds, ideas only when new.
+let tileStore = [];
+let ideaRegistry = [];
+const TERRAIN_NAMES = ['water', 'grass', 'forest', 'sand', 'mountain'];
+let tilesVersion = 0;
+function absorb(next, packed) {
+  if (packed) {
+    tilesVersion++;
+    if (packed.terrain) tileStore = Array.from({ length: packed.length }, (_, i) => ({ terrain: TERRAIN_NAMES[packed.terrain[i]], elevation: packed.elevation[i], fertility: packed.fertility[i] }));
+    for (const [key, values] of Object.entries(packed.fields)) for (let i = 0; i < values.length; i++) tileStore[i][key] = values[i];
+  }
+  next.tiles = tileStore;
+  next.tilesVersion = tilesVersion;
+  const innovation = next.innovation;
+  if (innovation.discoveriesFrom === 0) ideaRegistry = innovation.discoveries;
+  else for (const idea of innovation.discoveries) ideaRegistry.push(idea);
+  innovation.discoveries = ideaRegistry;
+  return next;
+}
+
 worker.onmessage = ({ data }) => {
   if (data.type === 'snapshot') {
-    snapshot = data.snapshot;
+    snapshot = absorb(data.snapshot, data.tiles);
     running = data.running;
     speed = data.speed;
     view.setSnapshot(snapshot);
@@ -217,6 +238,25 @@ function liveMarkup(element, markup) {
   element.scrollTop = scroll;
 }
 
+/** Annual output, output per person, the ten-year trend and a sparkline of the yearly record. */
+function economyMarkup(group) {
+  const economy = group.civilization?.economy;
+  if (!economy || !economy.history.length || economy.output < 0) return '<p class="quiet-note">Output is measured once the society has worked for a year.</p>';
+  const history = economy.history, decade = history.at(-11) ?? history[0], change = decade > 0 ? (economy.output / decade - 1) * 100 : 0;
+  const max = Math.max(...history, 1), points = history.map((value, index) => `${history.length === 1 ? 50 : index / (history.length - 1) * 100},${28 - value / max * 26}`).join(' ');
+  const years = Math.min(10, history.length - 1);
+  return `<div class="economy-line"><div><strong>${number(economy.output)}</strong><span>a year · ${decimal(economy.output / Math.max(1, group.members.length))} per person${years ? ` · ${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))}% over ${number(years)} ${years === 1 ? 'year' : 'years'}` : ''}</span></div><svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Yearly output"><polyline points="${points}" fill="none" stroke="${change >= 0 ? '#7f9d5f' : '#b27a5c'}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>`;
+}
+
+/** " · pays tribute to X" and/or " · rules N tributaries" for a society row. */
+function tributeMarkup(group) {
+  const relations = (snapshot.diplomacy?.relations || []).filter(relation => relation.status === 'tributary' && (relation.a === group.id || relation.b === group.id));
+  const name = id => snapshot.groups.find(other => other.id === id)?.name || 'a vanished society';
+  const overlord = relations.find(relation => relation.overlord !== group.id);
+  const ruled = relations.filter(relation => relation.overlord === group.id).length;
+  return `${overlord ? ` · pays tribute to ${escape(name(overlord.overlord))}` : ''}${ruled ? ` · rules ${number(ruled)} ${ruled === 1 ? 'tributary' : 'tributaries'}${ruled >= 3 ? ' (empire)' : ''}` : ''}`;
+}
+
 function researchMarkup(group) {
   const project = group.civilization?.project;
   if (!project) return '<span class="quiet-note">No active research project</span>';
@@ -257,8 +297,12 @@ function ideaCardsMarkup(kind, groups, people) {
   const pageSize = 12;
   ideaPage = Math.min(ideaPage, Math.max(0, Math.ceil(ideas.length / pageSize) - 1));
   const holdings = new Map(), communities = new Map(), convictions = new Map();
+  // Holder counts arrive per society rather than as every person's list of ideas.
+  for (const [society, counts] of Object.entries(snapshot.ideaHolders || {})) {
+    if (civilizationSociety !== 'all' && society !== civilizationSociety) continue;
+    for (const [id, count] of Object.entries(counts)) holdings.set(id, (holdings.get(id) || 0) + count);
+  }
   for (const person of people) {
-    for (const id of person.ideas || []) holdings.set(id, (holdings.get(id) || 0) + 1);
     for (const [id, strength] of Object.entries(person.convictions || {})) if (strength > 0) convictions.set(id, (convictions.get(id) || 0) + 1);
   }
   for (const group of groups) for (const id of group.civilization?.ideas || []) communities.set(id, (communities.get(id) || 0) + 1);
@@ -328,8 +372,8 @@ function renderGeneratedIdeas(groups, people) {
     const groupIds = new Set(groups.map(group => group.id));
     const relations = (snapshot.diplomacy?.relations || []).filter(relation => groupIds.has(relation.a) || groupIds.has(relation.b)).sort((a, b) => b.tension - a.tension);
     const groupNames = new Map(snapshot.groups.map(group => [group.id, group.name]));
-    $('#civilization-summary').textContent = `${number(snapshot.stats.wars)} wars · ${number(snapshot.stats.alliances)} alliances · ${number(snapshot.stats.tradeRoutes)} trade routes worldwide`;
-    liveMarkup(content, `<div class="diplomacy-totals"><span><strong>${number(snapshot.diplomacy?.warsStarted)}</strong> wars begun</span><span><strong>${number(snapshot.diplomacy?.treaties)}</strong> treaties</span><span><strong>${number(snapshot.diplomacy?.raids)}</strong> raids</span><span><strong>${number(snapshot.diplomacy?.warDeaths)}</strong> war deaths</span></div>${relations.length ? `<div class="relations-grid">${relations.map(relation => `<article class="relation-card ${escape(relation.status)}"><div class="relation-heading"><h3>${escape(groupNames.get(relation.a) || `Society #${relation.a}`)} <span>↔</span> ${escape(groupNames.get(relation.b) || `Society #${relation.b}`)}</h3><span class="relation-status">${escape(title(relation.status))}</span></div><p>${escape(relation.reason)}</p><dl class="relation-measures"><div><dt>Trust</dt><dd>${relation.trust >= 0 ? '+' : ''}${number(relation.trust * 100)}%</dd></div><div><dt>Tension</dt><dd>${number(relation.tension)} / 100</dd></div><div><dt>Traded</dt><dd>${decimal(relation.tradeTotal)}</dd></div><div><dt>Casualties</dt><dd>${number(relation.casualties)}</dd></div></dl><p class="quiet-note">${escape(title(relation.status))} since ${calendar(relation.since)} · ${number(relation.warDays)} days of war · Last contact ${calendar(relation.lastContact)}</p></article>`).join('')}</div>` : '<div class="empty-state idea-empty"><span>⇄</span>Societies need to encounter each other.<br>Recorded contacts, trade, alliances, conflict, and truces will appear here.</div>'}`);
+    $('#civilization-summary').textContent = `${number(snapshot.stats.wars)} wars · ${number(snapshot.stats.alliances)} alliances · ${number(snapshot.stats.tributaries)} tributaries · ${number(snapshot.stats.tradeRoutes)} trade routes worldwide${snapshot.stats.nuclearStrikes ? ` · ☢ ${number(snapshot.stats.nuclearStrikes)} nuclear ${snapshot.stats.nuclearStrikes === 1 ? 'strike' : 'strikes'}` : ''}`;
+    liveMarkup(content, `<div class="diplomacy-totals"><span><strong>${number(snapshot.diplomacy?.warsStarted)}</strong> wars begun</span><span><strong>${number(snapshot.diplomacy?.treaties)}</strong> treaties</span><span><strong>${number(snapshot.diplomacy?.raids)}</strong> raids</span><span><strong>${number(snapshot.diplomacy?.warDeaths)}</strong> war deaths</span></div>${relations.length ? `<div class="relations-grid">${relations.map(relation => `<article class="relation-card ${escape(relation.status)}"><div class="relation-heading"><h3>${escape(groupNames.get(relation.a) || `Society #${relation.a}`)} <span>↔</span> ${escape(groupNames.get(relation.b) || `Society #${relation.b}`)}</h3><span class="relation-status">${relation.status === 'tributary' ? `Tributary of ${escape(groupNames.get(relation.overlord) || 'its overlord')}` : escape(title(relation.status))}</span></div><p>${escape(relation.reason)}</p><dl class="relation-measures"><div><dt>Trust</dt><dd>${relation.trust >= 0 ? '+' : ''}${number(relation.trust * 100)}%</dd></div><div><dt>Tension</dt><dd>${number(relation.tension)} / 100</dd></div><div><dt>Traded</dt><dd>${decimal(relation.tradeTotal)}</dd></div><div><dt>Casualties</dt><dd>${number(relation.casualties)}</dd></div></dl><p class="quiet-note">${escape(title(relation.status))} since ${calendar(relation.since)} · ${number(relation.warDays)} days of war · Last contact ${calendar(relation.lastContact)}</p></article>`).join('')}</div>` : '<div class="empty-state idea-empty"><span>⇄</span>Societies need to encounter each other.<br>Recorded contacts, trade, alliances, conflict, and truces will appear here.</div>'}`);
     $('#civilization-footnote').textContent = 'Relations develop from contact, resource pressure, doctrine, trust, and relative capabilities. War consumes food, damages people and buildings, and transfers supplies. Treaties and truces can end fighting.';
   }
 }
@@ -351,7 +395,7 @@ function renderObservation() {
       const doctrine = (snapshot.innovation?.discoveries || []).find(idea => idea.id === civilization?.doctrine);
       const buildings = Object.values(civilization?.buildings || {}).reduce((sum, count) => sum + count, 0);
       const culture = civilization?.culture, leader = snapshot.agents.find(agent => agent.id === culture?.leaderId);
-      return `<article class="society-row"><div><i class="society-dot" style="background:${color(group.color)}"></i><h3>${escape(group.name)}</h3><span class="member-count">${culture ? `${escape(TIERS[culture.tier])} · ` : ''}${group.members.length} people</span></div><p>${escape(group.culture)}${leader ? ` · led by ${escape(leader.name)}` : ''}${culture?.parentId ? ` · colony of ${escape(snapshot.groups.find(other => other.id === culture.parentId)?.name || 'a vanished society')}` : ''}<br>${number(group.shelters)} shelters · ${number(group.food)} food · ${number(group.wood)} wood<br>${number(civilization?.technologies?.length)} foundations · ${number(civilization?.ideas?.length)} adopted ideas · ${number(buildings)} buildings${doctrine ? `<br>◈ ${escape(doctrine.name)}` : ''}</p><div class="society-research">${researchMarkup(group)}</div><div class="society-actions"><button class="text-button" data-person="${Number(group.members[0])}">Meet a member ↗</button><button class="text-button" data-society="${group.id}">Explore ideas ↗</button></div></article>`;
+      return `<article class="society-row"><div><i class="society-dot" style="background:${color(group.color)}"></i><h3>${escape(group.name)}</h3><span class="member-count">${culture ? `${escape(TIERS[culture.tier])} · ` : ''}${group.members.length} people</span></div><p>${escape(group.culture)}${leader ? ` · led by ${escape(leader.name)}` : ''}${culture?.parentId ? ` · colony of ${escape(snapshot.groups.find(other => other.id === culture.parentId)?.name || 'a vanished society')}` : ''}${tributeMarkup(group)}<br>${number(group.shelters)} shelters · ${number(group.food)} food · ${number(group.wood)} wood<br>${number(civilization?.technologies?.length)} foundations · ${number(civilization?.ideas?.length)} adopted ideas · ${number(buildings)} buildings${civilization?.economy?.history.length ? ` · output ${number(civilization.economy.output)} a year` : ''}${doctrine ? `<br>◈ ${escape(doctrine.name)}` : ''}</p><div class="society-research">${researchMarkup(group)}</div><div class="society-actions"><button class="text-button" data-person="${Number(group.members[0])}">Meet a member ↗</button><button class="text-button" data-society="${group.id}">Explore ideas ↗</button></div></article>`;
     }).join('') || '<div class="empty-state"><span>⌂</span>No societies yet.<br>Connections take time. Watch for people gathering and sharing.</div>');
     $('#deck-footer-text').textContent = `${number(snapshot.agents.filter(a => a.groupId === null).length)} independent individuals`;
   } else if (tab === 'conversations') {
@@ -402,7 +446,7 @@ function renderCivilization() {
       const known = holders.length > 0 || communities.length > 0;
       const state = known ? 'known' : research.length ? 'researching' : readyGroups.length ? 'available' : 'locked';
       const label = { known: 'Known', researching: 'In progress', available: 'Ready to study', locked: groups.length ? 'Prerequisites needed' : 'Awaiting a society' }[state];
-      return `<article class="technology-card ${state}"><div class="technology-heading"><span class="technology-symbol" aria-hidden="true">${known ? '✧' : research.length ? '◌' : '·'}</span><h3>${escape(tech.name)}</h3><span class="technology-state">${label}</span></div><p>${escape(tech.description)}</p><div class="prerequisite-list"><span>Requires</span> ${tech.requires.length ? tech.requires.map(id => `<span class="prerequisite ${groups.some(group => group.civilization?.technologies.includes(id)) ? 'met' : ''}">${escape(techName(id))}</span>`).join('') : '<span class="prerequisite met">No earlier discovery</span>'}</div>${Object.keys(tech.materials || {}).length ? `<p class="technology-materials">Demonstration uses ${Object.entries(tech.materials).map(([key, value]) => `${number(value)} ${escape(key)}`).join(', ')}</p>` : ''}<div class="technology-holders">${number(holders.length)} people know this · ${number(communities.length)} societies · ${number(tech.cost)} research effort</div>${research.slice(0, 3).map(({ group, progress, active }) => `<div class="technology-research"><div><span><i class="society-dot" style="background:${color(group.color)}"></i>${escape(group.name)}${active ? '' : ' · paused'}</span><strong>${number(percent(progress / tech.cost * 100))}%</strong></div><progress class="research-progress" max="${tech.cost}" value="${Math.min(tech.cost, progress)}" aria-label="${escape(tech.name)} progress in ${escape(group.name)}">${number(progress)} of ${number(tech.cost)}</progress></div>`).join('')}${research.length > 3 ? `<span class="quiet-note">${research.length - 3} more societies studying this idea</span>` : ''}</article>`;
+      return `<article class="technology-card ${state}"><div class="technology-heading"><span class="technology-symbol" aria-hidden="true">${known ? '✧' : research.length ? '◌' : '·'}</span><h3>${escape(tech.name)}</h3><span class="technology-state">${tech.era ? `${escape(tech.era)} · ` : ''}${label}</span></div><p>${escape(tech.description)}</p><div class="prerequisite-list"><span>Requires</span> ${tech.requires.length ? tech.requires.map(id => `<span class="prerequisite ${groups.some(group => group.civilization?.technologies.includes(id)) ? 'met' : ''}">${escape(techName(id))}</span>`).join('') : '<span class="prerequisite met">No earlier discovery</span>'}</div>${Object.keys(tech.materials || {}).length ? `<p class="technology-materials">Demonstration uses ${Object.entries(tech.materials).map(([key, value]) => `${number(value)} ${escape(key)}`).join(', ')}</p>` : ''}<div class="technology-holders">${number(holders.length)} people know this · ${number(communities.length)} societies · ${number(tech.cost)} research effort</div>${research.slice(0, 3).map(({ group, progress, active }) => `<div class="technology-research"><div><span><i class="society-dot" style="background:${color(group.color)}"></i>${escape(group.name)}${active ? '' : ' · paused'}</span><strong>${number(percent(progress / tech.cost * 100))}%</strong></div><progress class="research-progress" max="${tech.cost}" value="${Math.min(tech.cost, progress)}" aria-label="${escape(tech.name)} progress in ${escape(group.name)}">${number(progress)} of ${number(tech.cost)}</progress></div>`).join('')}${research.length > 3 ? `<span class="quiet-note">${research.length - 3} more societies studying this idea</span>` : ''}</article>`;
     }).join('')}</div>`);
     $('#civilization-footnote').textContent = 'Known means held by living people or societies. Each society must meet its own prerequisites; select one to follow its work.';
   } else {
@@ -415,7 +459,7 @@ function renderCivilization() {
       const roles = Object.entries(civ?.workforce || {}).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1]);
       const production = Object.entries(civ?.production || {}).filter(([, amount]) => amount > 0);
       const partners = (civ?.tradePartners || []).map(id => snapshot.groups.find(other => other.id === id)?.name || `Society #${id}`);
-      return `<article class="industry-card"><div class="industry-heading"><i class="society-dot" style="background:${color(group.color)}"></i><h3>${escape(group.name)}</h3><span>${group.members.length} people</span></div><p class="industry-label">Productive buildings</p><div class="building-list">${buildings.length ? buildings.map(([id, count]) => `<span title="${escape(BUILDINGS[id]?.technology ? `Requires ${techName(BUILDINGS[id].technology)}` : '')}">${escape(BUILDINGS[id]?.name || title(id))}<strong>${number(count)}</strong></span>`).join('') : '<span class="quiet-note">No industries built yet. Discover techniques and gather materials.</span>'}</div><p class="industry-label">Available stocks</p><dl class="stock-grid">${Object.entries(stock).filter(([id, amount]) => amount >= .05 || ['food', 'wood', 'stone', 'tools'].includes(id)).map(([id, amount]) => `<div><dt title="${escape(RESOURCE_INFO[id]?.uses || "")}">${escape(title(id))}</dt><dd>${decimal(amount)}</dd></div>`).join('')}</dl><p class="industry-label">Workforce</p><div class="workforce-list">${roles.length ? roles.map(([role, count]) => `<span>${escape(title(role))}<strong>${number(count)}</strong></span>`).join('') : '<span class="quiet-note">No roles recorded yet</span>'}</div><p class="industry-label">Produced over this society’s lifetime</p><p class="production-line">${production.length ? production.map(([id, amount]) => `${number(amount)} ${escape(id)}`).join(' · ') : 'Production begins when people put their skills to work.'}</p><p class="industry-label">Where the food comes from</p>${dietMarkup(civ?.diet)}<p class="industry-label">Current effects of all adopted ideas and customs</p>${effectMarkup(innovationEffects(snapshot, group), true)}${partners.length ? `<p class="trade-line">Trading relationships: ${partners.map(escape).join(', ')}</p>` : ''}<div class="society-research">${researchMarkup(group)}</div><button class="text-button" data-society="${group.id}">Follow this society’s ideas ↗</button></article>`;
+      return `<article class="industry-card"><div class="industry-heading"><i class="society-dot" style="background:${color(group.color)}"></i><h3>${escape(group.name)}</h3><span>${group.members.length} people</span></div><p class="industry-label">Economic output</p>${economyMarkup(group)}<p class="industry-label">Productive buildings</p><div class="building-list">${buildings.length ? buildings.map(([id, count]) => `<span title="${escape(BUILDINGS[id]?.technology ? `Requires ${techName(BUILDINGS[id].technology)}` : '')}">${escape(BUILDINGS[id]?.name || title(id))}<strong>${number(count)}</strong></span>`).join('') : '<span class="quiet-note">No industries built yet. Discover techniques and gather materials.</span>'}</div><p class="industry-label">Available stocks</p><dl class="stock-grid">${Object.entries(stock).filter(([id, amount]) => amount >= .05 || ['food', 'wood', 'stone', 'tools'].includes(id)).map(([id, amount]) => `<div><dt title="${escape(RESOURCE_INFO[id]?.uses || "")}">${escape(title(id))}</dt><dd>${decimal(amount)}</dd></div>`).join('')}</dl><p class="industry-label">Workforce</p><div class="workforce-list">${roles.length ? roles.map(([role, count]) => `<span>${escape(title(role))}<strong>${number(count)}</strong></span>`).join('') : '<span class="quiet-note">No roles recorded yet</span>'}</div><p class="industry-label">Produced over this society’s lifetime</p><p class="production-line">${production.length ? production.map(([id, amount]) => `${number(amount)} ${escape(id)}`).join(' · ') : 'Production begins when people put their skills to work.'}</p><p class="industry-label">Where the food comes from</p>${dietMarkup(civ?.diet)}<p class="industry-label">Current effects of all adopted ideas and customs</p>${effectMarkup(innovationEffects(snapshot, group), true)}${partners.length ? `<p class="trade-line">Trading relationships: ${partners.map(escape).join(', ')}</p>` : ''}<div class="society-research">${researchMarkup(group)}</div><button class="text-button" data-society="${group.id}">Follow this society’s ideas ↗</button></article>`;
     }).join('')}</div>` : '<div class="empty-state industry-empty"><span>⚒</span>Industry begins with shared work.<br>When societies form, their buildings, materials, skills, and production appear here.</div>');
     $('#civilization-footnote').textContent = 'Stocks are available now. Production and trade are cumulative. Buildings require discoveries and materials; useful output requires work.';
   }
@@ -423,6 +467,8 @@ function renderCivilization() {
 
 function selectAgent(id) {
   selectedId = id;
+  // Only the inspected person's full mind and memories are sent from the worker.
+  request('inspect', { id }).catch(report);
   following = false;
   view.setFollow(null);
   view.setSelected(id);
@@ -436,6 +482,8 @@ function renderIndividual() {
     return;
   }
   const agent = snapshot?.agents.find(person => person.id === selectedId);
+  // Their full record arrives with the next update.
+  if (agent?.lite) return;
   if (!agent) {
     if (!panel.querySelector('.remembered-life')) panel.innerHTML = '<div class="inspector-heading remembered-life"><span>A LIFE REMEMBERED</span><button class="icon-btn" data-dismiss-person aria-label="Close individual">×</button></div><div class="individual-placeholder"><p>A story has ended.</p><span>This individual is no longer living. Their influence continues through their family and society.</span></div>';
     following = false;
@@ -549,7 +597,7 @@ $$('[data-speed]').forEach(button => button.addEventListener('click', act(() => 
 $$('[data-overlay]').forEach(button => button.addEventListener('click', () => {
   $$('[data-overlay]').forEach(other => { other.classList.toggle('active', other === button); other.setAttribute('aria-pressed', String(other === button)); });
   view.setOverlay(button.dataset.overlay);
-  const legends = { natural: '<span><i class="legend-citizen"></i> Individual</span><span><i class="legend-forest"></i> Woodland</span><span><i class="legend-water"></i> Water</span>', food: '<span><i style="background:#cbbd75"></i> Depleted</span><span><i style="background:#6cab79"></i> Abundant food</span>', societies: '<span><i class="legend-citizen"></i> Society influence</span><span>Colors identify groups</span>', knowledge: '<span><i style="background:#ccac60"></i> Ideas</span><span><i style="background:#7fa58a"></i> Teaching</span><span>Exchanges · last 45 days</span>', relations: '<span><i style="background:#b46f59"></i> War</span><span><i style="background:#91bda3"></i> Alliance</span><span><i style="background:#e2bb75"></i> Trade</span><span>◈ Belief tradition</span>', industry: '<span><i style="background:#bd875c"></i> Ore</span><span><i style="background:#d2d3c4"></i> Stone</span><span><i style="background:#c5b777"></i> Fertile soil</span>' };
+  const legends = { natural: '<span><i class="legend-citizen"></i> Individual</span><span><i class="legend-forest"></i> Woodland</span><span><i style="background:#b0aa78"></i> Cleared</span><span><i style="background:#d2bf6e"></i> Fields</span><span><i style="background:#ded0a4"></i> Road</span><span><i style="background:#4b4a4c"></i> Railway</span><span><i class="legend-water"></i> Water</span>', food: '<span><i style="background:#cbbd75"></i> Depleted</span><span><i style="background:#6cab79"></i> Abundant food</span>', societies: '<span><i class="legend-citizen"></i> Society influence</span><span>Colors identify groups</span>', knowledge: '<span><i style="background:#ccac60"></i> Ideas</span><span><i style="background:#7fa58a"></i> Teaching</span><span>Exchanges · last 45 days</span>', relations: '<span><i style="background:#b46f59"></i> War</span><span><i style="background:#91bda3"></i> Alliance</span><span><i style="background:#e2bb75"></i> Trade</span><span>◈ Belief tradition</span>', industry: '<span><i style="background:#bd875c"></i> Ore</span><span><i style="background:#d2d3c4"></i> Stone</span><span><i style="background:#c5b777"></i> Fertile soil</span><span><i style="background:#3a3836"></i> Coal</span><span><i style="background:#9fc25a"></i> Uranium</span>' };
   $('#map-legend').innerHTML = legends[button.dataset.overlay] || legends.natural;
 }));
 $('#zoom-in').addEventListener('click', () => view.zoomBy(1.35));
@@ -723,7 +771,10 @@ $('#import-file').addEventListener('change', act(async event => {
   await saveLocal(true);
   toast('World restored and paused. Press play to continue.');
 }));
-document.addEventListener('visibilitychange', () => { if (document.hidden) saveLocal().catch(report); });
+document.addEventListener('visibilitychange', () => {
+  request('visible', { visible: !document.hidden }).catch(report);
+  if (document.hidden) saveLocal().catch(report);
+});
 window.addEventListener('pagehide', () => { saveLocal().catch(() => {}); });
 
 async function start() {
@@ -750,6 +801,6 @@ async function start() {
   renderCivilization();
   renderChart();
   await saveLocal();
-  setInterval(() => saveLocal().catch(report), 15000);
+  setInterval(() => saveLocal().catch(report), 60000);
 }
 start().catch(error => { report(error); $('#loading p').textContent = `Unable to open the world: ${error.message}`; });

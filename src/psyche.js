@@ -9,9 +9,9 @@ import { culturalPull } from './culture.js';
 export const PERSONALITY = Object.freeze(['openness', 'conscientiousness', 'extraversion', 'agreeableness', 'neuroticism']);
 export const EMOTIONS = Object.freeze(['joy', 'pride', 'fear', 'anger', 'grief']);
 export const ACTIVITIES = Object.freeze(['basic', 'research', 'invent', 'reflect', 'study', 'teach', 'farm', 'build', 'craft', 'pottery', 'smelt', 'lumber', 'quarry', 'mine', 'heal', 'trade',
-  'hunt', 'fish', 'herd', 'dig', 'reap', 'herb', 'prospect', 'bricks', 'weave', 'remedy', 'pioneer']);
+  'hunt', 'fish', 'herd', 'dig', 'reap', 'herb', 'prospect', 'bricks', 'weave', 'remedy', 'pioneer', 'colliery', 'uranium', 'manufacture', 'assemble', 'enrich']);
 const SKILL_IDS = ['foraging', 'farming', 'forestry', 'mining', 'crafting', 'scholarship', 'medicine', 'leadership'];
-const PLACE_KINDS = ['food', 'wood', 'stone', 'ore', 'clay', 'fiber', 'herbs', 'gems', 'game', 'fish'];
+const PLACE_KINDS = ['food', 'wood', 'stone', 'ore', 'clay', 'fiber', 'herbs', 'gems', 'game', 'fish', 'coal', 'uranium'];
 const RECORD_KEYS = ['discovered', 'taught', 'healed', 'built', 'traded', 'provided', 'founded'];
 
 /** Practical know-how. Effects multiply the named quantity for the holder only. */
@@ -36,10 +36,10 @@ export const TECHNIQUES = Object.freeze([
 const techniqueById = new Map(TECHNIQUES.map(technique => [technique.id, technique]));
 
 /** Which activities exercise which skill; used by mastery aspirations and techniques. */
-const SKILL_ACTIVITIES = { foraging: ['basic', 'hunt', 'fish', 'reap'], farming: ['farm', 'herd'], forestry: ['lumber'], mining: ['quarry', 'mine', 'dig', 'prospect'], crafting: ['craft', 'pottery', 'smelt', 'build', 'bricks', 'weave'], scholarship: ['research', 'invent', 'study'], medicine: ['heal', 'herb', 'remedy'], leadership: ['trade', 'teach', 'reflect', 'pioneer'] };
+const SKILL_ACTIVITIES = { foraging: ['basic', 'hunt', 'fish', 'reap'], farming: ['farm', 'herd'], forestry: ['lumber'], mining: ['quarry', 'mine', 'dig', 'prospect', 'colliery', 'uranium'], crafting: ['craft', 'pottery', 'smelt', 'build', 'bricks', 'weave', 'manufacture', 'assemble'], scholarship: ['research', 'invent', 'study', 'enrich'], medicine: ['heal', 'herb', 'remedy'], leadership: ['trade', 'teach', 'reflect', 'pioneer'] };
 const ACTIVITY_SKILL = Object.fromEntries(Object.entries(SKILL_ACTIVITIES).flatMap(([skill, activities]) => activities.map(activity => [activity, skill])));
 const ACTIVITY_LABEL = { basic: 'everyday foraging', research: 'research', invent: 'experimenting', reflect: 'reflection', study: 'study', teach: 'teaching', farm: 'farming', build: 'building', craft: 'toolmaking', pottery: 'pottery', smelt: 'smelting', lumber: 'timber work', quarry: 'quarrying', mine: 'mining', heal: 'healing', trade: 'trading',
-  hunt: 'hunting', fish: 'fishing', herd: 'herding', dig: 'clay digging', reap: 'fiber gathering', herb: 'herb gathering', prospect: 'gem prospecting', bricks: 'brickmaking', weave: 'weaving', remedy: 'remedy making', pioneer: 'pioneering' };
+  hunt: 'hunting', fish: 'fishing', herd: 'herding', dig: 'clay digging', reap: 'fiber gathering', herb: 'herb gathering', prospect: 'gem prospecting', bricks: 'brickmaking', weave: 'weaving', remedy: 'remedy making', pioneer: 'pioneering', colliery: 'coal mining', uranium: 'uranium mining', manufacture: 'factory work', assemble: 'electronics assembly', enrich: 'weapons work' };
 const SKILL_NOUN = { foraging: 'forager', farming: 'farmer', forestry: 'forester', mining: 'miner', crafting: 'artisan', scholarship: 'scholar', medicine: 'healer', leadership: 'organiser' };
 
 export const ASPIRATIONS = Object.freeze({
@@ -171,6 +171,10 @@ export function appraise(sim, agent, kind, detail = {}) {
       break;
     case 'gift':
       feel(agent, 'joy', .006);
+      break;
+    case 'catastrophe':
+      feel(agent, 'fear', .6); feel(agent, 'grief', .4); feel(agent, 'joy', -.3);
+      recordEpisode(sim, agent, { type: 'disaster', text: detail.text, valence: -.95, salience: .95 });
       break;
   }
 }
@@ -351,12 +355,12 @@ function chooseAspiration(sim, agent, exclude = null) {
 
 // ——— deliberation ———
 
-const RISKY = new Set(['mine', 'quarry', 'trade', 'invent', 'hunt', 'prospect', 'pioneer']);
+const RISKY = new Set(['mine', 'quarry', 'trade', 'invent', 'hunt', 'prospect', 'pioneer', 'colliery', 'uranium', 'enrich']);
 const SAFE = new Set(['farm', 'basic', 'build', 'study', 'herd', 'weave']);
 const WITHDRAWN = new Set(['reflect', 'basic']);
 const OUTGOING = new Set(['teach', 'trade', 'reflect', 'heal']);
 const AMBITIOUS = new Set(['invent', 'research', 'build', 'teach']);
-const PHYSICAL = new Set(['lumber', 'quarry', 'mine', 'dig', 'hunt']);
+const PHYSICAL = new Set(['lumber', 'quarry', 'mine', 'dig', 'hunt', 'colliery', 'uranium']);
 const CARING = new Set(['teach', 'heal', 'reflect']);
 
 function personalityFit(p, action) {
@@ -365,7 +369,7 @@ function personalityFit(p, action) {
     case 'teach': case 'trade': return p.extraversion - .5;
     case 'reflect': return (p.openness + p.agreeableness) / 2 - .5;
     case 'heal': return p.agreeableness - .5;
-    case 'farm': case 'craft': case 'build': case 'pottery': case 'smelt': return p.conscientiousness - .5;
+    case 'farm': case 'craft': case 'build': case 'pottery': case 'smelt': case 'manufacture': case 'assemble': return p.conscientiousness - .5;
     case 'mine': case 'quarry': return .2 - p.neuroticism * .4;
   }
   return 0;

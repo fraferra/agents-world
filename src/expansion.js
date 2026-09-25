@@ -73,14 +73,17 @@ export function considerExpansion(sim, group, near, found) {
   const drives = adults.map(agent => agent.psyche?.expansion ?? .4);
   const eager = drives.filter(drive => drive > .55).length / adults.length;
   // A society expands when its people, its culture and its leader want to, or the land forces it.
-  const desire = culture.norms.expansion * .3 + culture.pressure * .35 + eager * .2 + (leader?.psyche?.expansion ?? .4) * .15 * (.5 + culture.norms.hierarchy) + (civ.buildings.hall ? .08 : 0);
+  // Fields, workshops and halls root people: a settled town sends colonists mainly under real land pressure.
+  const rooted = Math.min(.25, Object.values(civ.buildings).reduce((a, b) => a + b, 0) * .015);
+  const desire = culture.norms.expansion * .3 + culture.pressure * .35 + eager * .2 + (leader?.psyche?.expansion ?? .4) * .15 * (.5 + culture.norms.hierarchy) + (civ.buildings.hall ? .08 : 0) - rooted;
   if (desire < .36 || sim._random() >= (desire - .32) * .5) return null;
   const site = chooseSite(sim, group, near);
   if (!site) return null;
   // The most eager go; nobody is sent against their will.
   const pioneers = adults.filter(agent => agent.id !== culture.leaderId && (agent.psyche?.expansion ?? .4) > .45).sort((a, b) => (b.psyche?.expansion ?? 0) - (a.psyche?.expansion ?? 0));
-  const count = Math.min(pioneers.length, Math.max(4, Math.round(people.length * (.18 + desire * .15))));
-  if (count < 4 || people.length - count < 6) return null;
+  const count = Math.min(pioneers.length, Math.max(6, Math.round(people.length * (.18 + desire * .15))));
+  // A colony needs enough pioneers to survive, and the mother community enough people to carry on.
+  if (count < 6 || people.length - count < 12) return null;
   const chosen = new Set(pioneers.slice(0, count));
   for (const agent of [...chosen]) {
     const partner = sim._agentMap.get(agent.partnerId);

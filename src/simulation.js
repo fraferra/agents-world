@@ -3,15 +3,16 @@
  * One tick is one day; the compressed model year has 120 days. Decisions use
  * individual needs, nearby resources and remembered encounters, not a script.
  */
-import { initializeMind, initializeSociety, initializeCivilization, considerCivilization, observeAction, communicate, advanceCivilization, civilizationStats, dietVariety, surroundings, facilities, restoreMind, restoreSociety, restoreCivilization } from './civilization.js';
+import { initializeMind, initializeSociety, initializeCivilization, considerCivilization, observeAction, communicate, advanceCivilization, civilizationStats, dietVariety, surroundings, facilities, industry, farmRadius, restoreMind, restoreSociety, restoreCivilization } from './civilization.js';
 import { initializeInnovation, initializeAgentIdeas, initializeGroupIdeas, innovationEffects, advanceInnovation, innovationStats, restoreInnovation, restoreAgentIdeas, restoreGroupIdeas } from './innovation.js';
-import { initializeDiplomacy, advanceDiplomacy, diplomacyStats, restoreDiplomacy } from './diplomacy.js';
+import { initializeDiplomacy, advanceDiplomacy, diplomacyStats, restoreDiplomacy, atWar, relationBetween, recordMarriage } from './diplomacy.js';
 import { assignSex, assignAttraction, compatible, mother as motherOf, mortality, postpartumDays, conceptionChance, maximumLifespanDays, initializeVital, recordDeath, recordCompletedFertility, vitalStats, restoreVital } from './lifecourse.js';
 import { drawOnWealth, bequeath, shareWealth, standing, gini } from './economy.js';
-import { TILE_RESOURCES, shoreMask, generateResources, renew } from './resources.js';
+import { TILE_RESOURCES, DEPOSITS, shoreMask, generateResources, generateDeposits, renew } from './resources.js';
 import { initializeGlobalCulture, initializeCulture, advanceCulture, cultureLabel, customModifiers, restoreGlobalCulture, restoreCulture } from './culture.js';
 import { considerExpansion, considerFission } from './expansion.js';
 import { establishKinship } from './diplomacy.js';
+import { initializeInfrastructure, advanceInfrastructure, infrastructureStats, restoreInfrastructure, linkBetween } from './infrastructure.js';
 import { performAct, endureConditions, activeConditions, PLAGUE_DAYS, WINTER_DAYS } from './acts.js';
 import { initializeGlobalPsyche, initializePsyche, restoreGlobalPsyche, restorePsyche, restoreRelationExtras, psycheStats, moodBalance, appraise, acquaint, appreciate, techniqueFactor, rememberPlace, recallPlace, revisitPlace, recordEpisode } from './psyche.js';
 
@@ -26,7 +27,9 @@ export const WORLD_SIZES = Object.freeze({
 });
 const REGION_GRID = { compact: [4, 3], standard: [4, 3], large: [4, 3], vast: [5, 4], immense: [6, 5] };
 const HISTORY_LIMIT = 720, EVENT_LIMIT = 120;
-const TERRAIN = ['water', 'grass', 'forest', 'sand', 'mountain'];
+export const TERRAIN = ['water', 'grass', 'forest', 'sand', 'mountain'];
+// Tile fields that change as the world is used; terrain, elevation and fertility never do.
+export const TILE_FIELDS = Object.freeze(['food', 'wood', 'soil', 'stone', 'ore', ...TILE_RESOURCES, ...DEPOSITS, 'worked']);
 const COLORS = ['#df985f', '#6dbea0', '#b29bd6', '#e0bd60', '#7da9d3', '#d8869c', '#a4ba72', '#88c7ca'];
 const FIRST_NAMES = ['Ari', 'Mira', 'Kai', 'Sora', 'Lena', 'Noor', 'Emi', 'Rowan', 'Asa', 'Iris', 'Leo', 'Wren', 'Ivo', 'Nia', 'Theo', 'Zuri', 'Sage', 'Ada', 'Remy', 'Ravi', 'June', 'Eden', 'Oren', 'Alba', 'Jin', 'Isla', 'Finn', 'Yara', 'Paz', 'Elio', 'Lumi', 'Tala'];
 const MORE_REGION_NAMES = ['Alder', 'Amber', 'Willow', 'Silver', 'Moss', 'Copper', 'Juniper', 'Wind', 'Sun', 'Fern', 'Ash', 'Blue', 'Heron', 'Cedar', 'Ember', 'Frost', 'Hazel', 'Iron', 'Lark', 'Marsh', 'Oak', 'Pine', 'Quill', 'Raven', 'Sable', 'Thistle', 'Umber', 'Violet', 'Wren', 'Yarrow'];
@@ -99,6 +102,7 @@ export class Simulation {
     initializeDiplomacy(this);
     initializeGlobalPsyche(this);
     initializeGlobalCulture(this);
+    initializeInfrastructure(this);
     initializeVital(this);
     this._populate();
     this._event('world', `${this.agents.length} individuals arrive in a new world. Their choices will shape what follows.`);
@@ -214,7 +218,7 @@ export class Simulation {
       action: age < 5 ? 'growing up' : 'exploring', generation: parents ? Math.max(parents[0].generation, parents[1].generation) + 1 : 1,
       _ageDays: ageDays, _lifespan: maximumLifespanDays(this._random()), sex: assignSex(this), attraction: assignAttraction(this), wealth: 0,
       _lastBirthDay: -1000, _bondDay: -1, _relations: [], _stress: 0, _homeDays: 0,
-      _wanderX: x, _wanderY: y,
+      _wanderX: x, _wanderY: y, _courtship: null,
     };
     initializeMind(this, agent, parents);
     initializeAgentIdeas(agent);
@@ -437,10 +441,14 @@ export class Simulation {
       if (agent.hunger > 35 && !parent) this._forage(agent);
       return;
     }
-    if (agent.hunger > 40 || (agent.inventory.food < (youngChild ? 2.1 : 1.15) && !(home && group.food > group.members.length * 0.7))) {
+    // Exhaustion comes before topping up a food reserve; only real hunger overrides it.
+    const exhausted = agent.energy < 25 && agent.hunger <= 40;
+    if (!exhausted && (agent.hunger > 40 || (agent.inventory.food < (youngChild ? 2.1 : 1.15) && !(home && group.food > group.members.length * 0.7)))) {
       this._forage(agent); return;
     }
-    if (agent.energy < 36 || (agent.energy < 67 && this._random() < 0.12)) {
+    // Rest before energy falls below what work needs (43, see considerCivilization);
+    // otherwise people drift just under it, too tired to work yet not resting.
+    if (agent.energy < 45 || (agent.energy < 67 && this._random() < 0.12)) {
       if (group && !home && agent.hunger < 30) this._move(agent, group);
       agent.energy = clamp(agent.energy + (home && group.shelters * 5 >= group.members.length ? 20 : 14), 0, 100);
       agent.action = home && group.shelters ? 'resting at home' : 'resting';
@@ -477,15 +485,32 @@ export class Simulation {
       const child = agent.children.map((id) => this._agentMap.get(id)).find((a) => a && a.age < 12);
       if (child) { this._move(agent, child); agent.social = clamp(agent.social + 3, 0, 100); agent.action = 'caring for family'; return; }
     }
-    if (group && distance2(agent, group) > 120 && this._random() > agent.traits.curiosity) {
+    // Curious people range far from camp (from about 12 to 40 tiles) before the pull of home wins.
+    const range = 12 + agent.traits.curiosity * 28;
+    if (group && distance2(agent, group) > range * range && this._random() > agent.traits.curiosity) {
       this._move(agent, group); agent.action = 'returning to camp'; return;
     }
-    if (distance2(agent, { x: agent._wanderX, y: agent._wanderY }) < 2 || this._random() < 0.06) {
-      const target = this._landNear(agent.x + (this._random() - 0.5) * (12 + agent.traits.curiosity * 22), agent.y + (this._random() - 0.5) * (12 + agent.traits.curiosity * 22));
+    const arrived = distance2(agent, { x: agent._wanderX, y: agent._wanderY }) < 2;
+    if (arrived) this._survey(agent);
+    if (arrived || this._random() < 0.06) {
+      const reach = 16 + agent.traits.curiosity * 44;
+      const target = this._landNear(agent.x + (this._random() - 0.5) * reach, agent.y + (this._random() - 0.5) * reach);
       agent._wanderX = target.x; agent._wanderY = target.y;
     }
-    this._move(agent, { x: agent._wanderX, y: agent._wanderY }, 0.8);
+    this._move(agent, { x: agent._wanderX, y: agent._wanderY }, 0.9);
     agent.action = 'exploring';
+  }
+
+  /** An explorer notes the best food, timber and materials around a place they reach. */
+  _survey(agent) {
+    for (const kind of ['food', 'wood', 'stone', 'ore', 'game', 'fish', 'clay', 'coal']) {
+      let best = null, value = 0;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const tile = this._tile(agent.x + dx, agent.y + dy);
+        if (tile.terrain !== 'water' && (tile[kind] || 0) > value) { value = tile[kind]; best = { x: Math.floor(clamp(agent.x + dx, 0, this.width - 1)) + 0.5, y: Math.floor(clamp(agent.y + dy, 0, this.height - 1)) + 0.5 }; }
+      }
+      if (best && value > 0.45) rememberPlace(this, agent, kind, best.x, best.y, value);
+    }
   }
 
   _remember(agent, other) {
@@ -530,12 +555,8 @@ export class Simulation {
       appreciate(other, agent);
       agent.action = 'helping a neighbor';
     }
-    if (agent.age >= 16 && other.age >= 16 && agent.age < 55 && other.age < 55 && Math.abs(agent.age - other.age) < 20
-      && !agent.partnerId && !other.partnerId && !this._kin(agent, other) && compatible(agent, other) && bond.strength > 0.28 && this._random() < 0.2 * (1 + Math.min(0.5, (standing(agent) + standing(other)) / 10))) {
-      agent.partnerId = other.id; other.partnerId = agent.id;
-      agent._bondDay = this.day; other._bondDay = this.day;
-      agent.social = clamp(agent.social + 15, 0, 100); other.social = clamp(other.social + 15, 0, 100);
-      appraise(this, agent, 'bond', { name: other.name, about: other.id }); appraise(this, other, 'bond', { name: agent.name, about: agent.id });
+    if (this._eligibleMate(agent, other) && bond.strength > 0.28 && this._random() < 0.2 * (1 + Math.min(0.5, (standing(agent) + standing(other)) / 10))) {
+      this._pair(agent, other);
       if (agent.groupId && !other.groupId) this._joinGroup(other, this._groupMap.get(agent.groupId));
       else if (other.groupId && !agent.groupId) this._joinGroup(agent, this._groupMap.get(other.groupId));
     }
@@ -544,6 +565,111 @@ export class Simulation {
       const group = this._groupMap.get(other.groupId);
       if (group && distance2(agent, group) < 225) this._joinGroup(agent, group);
     }
+  }
+
+  /** Adults who could begin a life together: single, of age, close in age, mutually attracted, not close kin. */
+  _eligibleMate(a, b) {
+    return a !== b && b.health > 0 && !a.partnerId && !b.partnerId && a.age >= 16 && b.age >= 16 && a.age < 55 && b.age < 55
+      && Math.abs(a.age - b.age) < 20 && compatible(a, b) && !this._kin(a, b);
+  }
+
+  _pair(a, b) {
+    a.partnerId = b.id; b.partnerId = a.id;
+    a._bondDay = this.day; b._bondDay = this.day;
+    a.social = clamp(a.social + 15, 0, 100); b.social = clamp(b.social + 15, 0, 100);
+    appraise(this, a, 'bond', { name: b.name, about: b.id }); appraise(this, b, 'bond', { name: a.name, about: a.id });
+    a._courtship = null; b._courtship = null;
+  }
+
+  /** Single adults by society (0 for those without one), rebuilt daily; eligibility is rechecked on use. */
+  _singles() {
+    if (this._singleCache?.day === this.day) return this._singleCache.map;
+    const map = new Map();
+    for (const agent of this.agents) {
+      if (agent.partnerId || agent.age < 16 || agent.age >= 55 || agent.health <= 0) continue;
+      const key = agent.groupId || 0;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(agent);
+    }
+    this._singleCache = { day: this.day, map };
+    return map;
+  }
+
+  /**
+   * Band exogamy. Small bands soon hold no one a single person could marry, so,
+   * as foragers do, people look to other bands. A single adult with no suitable
+   * partner at home may set out for a band within reach that has one. Allied,
+   * trading and kin bands draw people from farther away; a band at war never
+   * does. Open, outward-looking cultures marry out readily, traditional and
+   * inward-looking ones less.
+   */
+  _considerCourtship(agent, home) {
+    if (agent.partnerId || agent._courtship || agent.age >= 50) return;
+    const singles = this._singles();
+    if (home ? (singles.get(home.id) || []).some((other) => this._eligibleMate(agent, other)) : this._neighbors(agent, 8).some((other) => this._eligibleMate(agent, other))) return;
+    const norms = home?.civilization.culture?.norms;
+    const outlook = norms ? (norms.expansion + norms.mercantile - norms.tradition - norms.collectivism) * 0.25 : 0.1;
+    const willingness = clamp(0.35 + (agent.psyche.personality.openness - 0.5) * 0.4 + agent.traits.sociability * 0.15 + outlook, 0.05, 0.85);
+    if (this._random() > willingness * 0.5) return;
+    const origin = home || agent, reach = 45 * (home ? industry(home).reach : 1);
+    let best = null, bestScore = -Infinity;
+    for (const band of this.groups) {
+      if (band === home || !(singles.get(band.id) || []).some((other) => this._eligibleMate(agent, other))) continue;
+      // A road or railway brings a distant band within easy reach.
+      const route = home ? linkBetween(this, home, band) : null;
+      const distance = Math.sqrt(distance2(origin, band)) / (route ? (route.kind === 'rail' ? 3 : 2) : 1);
+      if (distance > reach || (home && atWar(this, home, band))) continue;
+      const r = home ? relationBetween(this, home, band) : null;
+      const kin = home && (home.civilization.culture?.parentId === band.id || band.civilization.culture?.parentId === home.id) ? 0.5 : 0;
+      const ties = !r ? 0 : r.status === 'alliance' ? 0.6 : r.status === 'trade' ? 0.4 : r.status === 'truce' ? -0.3 : 0;
+      // Strangers are approached only nearby; friends and kin are worth a longer journey.
+      const score = ties + kin + (r ? r.trust * 0.5 - r.tension / 100 : 0) - distance / reach;
+      if (score > bestScore) { bestScore = score; best = band; }
+    }
+    if (!best || bestScore < -0.7) return;
+    agent._courtship = { groupId: best.id, since: this.day };
+  }
+
+  /** A courting journey: travel to the band, get to know its singles, perhaps marry. Returns false to fall back to everyday needs. */
+  _court(agent, home) {
+    const band = this._groupMap.get(agent._courtship.groupId);
+    const hosts = band ? (this._singles().get(band.id) || []).filter((other) => this._eligibleMate(agent, other)) : [];
+    if (!band || band === home || agent.partnerId || !hosts.length || (home && atWar(this, home, band)) || this.day - agent._courtship.since > 150) {
+      agent._courtship = null; return false;
+    }
+    if (agent.hunger > 40 || agent.energy < 30) return false;
+    agent.mind.intention = `Find a partner among the people of ${band.name}.`;
+    if (distance2(agent, band) > 36) {
+      this._move(agent, band, 1.1); agent.action = `travelling to ${band.name} to find a partner`; return true;
+    }
+    const nearby = hosts.filter((other) => distance2(other, band) < 225);
+    if (!nearby.length) { this._move(agent, band, 0.6); agent.action = `visiting ${band.name}`; return true; }
+    const other = this._pick(nearby);
+    this._move(agent, other, 0.9);
+    const bond = this._remember(agent, other), returned = this._remember(other, agent);
+    acquaint(agent, other, bond); acquaint(other, agent, returned);
+    communicate(this, agent, other);
+    agent.social = clamp(agent.social + 5, 0, 100); other.social = clamp(other.social + 5, 0, 100);
+    agent.action = `courting ${other.name} in ${band.name}`;
+    const trust = home ? relationBetween(this, home, band)?.trust || 0 : 0;
+    if (bond.strength > 0.28 && this._random() < 0.25 * (1 + trust)) this._marry(agent, other, home, band);
+    return true;
+  }
+
+  /** The couple settles where life looks better: the larger, better-fed band. */
+  _marry(agent, other, home, band) {
+    this._pair(agent, other);
+    const prospects = (group) => group.members.length + group.food / Math.max(1, group.members.length) * 2;
+    let text;
+    if (home && prospects(home) > prospects(band)) {
+      this._joinGroup(other, home);
+      text = `${agent.name} of ${home.name} marries ${other.name} of ${band.name} and brings them home.`;
+    } else {
+      this._joinGroup(agent, band);
+      text = `${agent.name}${home ? ` of ${home.name}` : ''} marries ${other.name} and joins ${band.name}.`;
+    }
+    if (home) recordMarriage(this, home, band);
+    this._event('group', text, { agentId: agent.id, groupId: band.id });
   }
 
   _joinGroup(agent, group) {
@@ -561,6 +687,7 @@ export class Simulation {
   _considerSociety(agent) {
     if (agent.age < 16 || agent.hunger > 45 || this.config.cooperation === 0) return;
     const group = this._groupMap.get(agent.groupId);
+    this._considerCourtship(agent, group);
     if (group) {
       agent._homeDays += 7;
       // Customs, temples and halls hold a community together; restless pioneers leave more readily.
@@ -638,6 +765,7 @@ export class Simulation {
         }
       }
     }
+    if (this.day % 30 === 15) this._consolidate();
     for (let i = this.groups.length - 1; i >= 0; i--) {
       const group = this.groups[i];
       if (group.members.length === 0 || (group.members.length < 2 && this.day - group._foundedDay > 180)) {
@@ -645,6 +773,38 @@ export class Simulation {
         this.groups.splice(i, 1); this._groupMap.delete(group.id);
         this._event('group', `${group.name} dissolves as its last members move on.`, { groupId: group.id });
       }
+    }
+  }
+
+  /**
+   * A dwindling band cannot keep up its camp. Its people join the most promising
+   * friendly band within reach (allies, kin and settled towns first), bringing
+   * their stores, instead of dying out one by one.
+   */
+  _consolidate() {
+    for (const band of [...this.groups]) {
+      if (band.members.length >= 5 || this.day - band._foundedDay < 360 || !this._groupMap.has(band.id)) continue;
+      let best = null, bestScore = -Infinity;
+      for (const other of this.groups) {
+        if (other === band || other.members.length <= band.members.length || atWar(this, band, other)) continue;
+        const distance = Math.sqrt(distance2(band, other));
+        if (distance > 40) continue;
+        const r = relationBetween(this, band, other);
+        const kin = band.civilization.culture?.parentId === other.id || other.civilization.culture?.parentId === band.id;
+        const built = Object.values(other.civilization.buildings).reduce((a, b) => a + b, 0);
+        const score = (r?.status === 'alliance' || kin ? 1 : r?.status === 'trade' ? 0.6 : 0) + (r?.trust || 0) - (r?.tension || 0) / 100 + Math.min(1, built / 12) + Math.min(1, other.members.length / 40) - distance / 40;
+        if (score > bestScore) { bestScore = score; best = other; }
+      }
+      if (!best) continue;
+      best.food += band.food; best.wood += band.wood; band.food = 0; band.wood = 0;
+      for (const key of Object.keys(band.civilization.stock)) { best.civilization.stock[key] += band.civilization.stock[key]; band.civilization.stock[key] = 0; }
+      for (const id of [...band.members]) {
+        const agent = this._agentMap.get(id);
+        if (!agent || agent.groupId !== band.id) continue;
+        this._joinGroup(agent, best);
+        agent._wanderX = best.x; agent._wanderY = best.y;
+      }
+      this._event('group', `The last people of ${band.name} join ${best.name}.`, { groupId: best.id });
     }
   }
 
@@ -729,7 +889,7 @@ export class Simulation {
     const dead = this.agents.filter((a) => a.health <= 0 || a._ageDays >= a._lifespan);
     if (!dead.length) return;
     const ids = new Set(dead.map((a) => a.id));
-    const causes = { war: 'war', plague: 'plague', disaster: 'injuries from a disaster', 'childhood illness': 'a childhood illness', 'old age': 'old age', illness: 'illness', 'an accident': 'an accident', epidemic: 'an epidemic' };
+    const causes = { war: 'war', 'nuclear war': 'a nuclear strike', radiation: 'radiation sickness', plague: 'plague', disaster: 'injuries from a disaster', 'childhood illness': 'a childhood illness', 'old age': 'old age', illness: 'illness', 'an accident': 'an accident', epidemic: 'an epidemic' };
     for (const agent of dead) {
       const group = this._groupMap.get(agent.groupId);
       if (group) {
@@ -775,11 +935,13 @@ export class Simulation {
       for (let i = 0; i < count; i++) {
         const agent = this.agents[(i + offset) % count], group = this._groupMap.get(agent.groupId);
         agent._ageDays++; agent.age = agent._ageDays / DAYS_PER_YEAR;
-        agent.energy = clamp(agent.energy - 1.8, 0, 100);
+        // A night under a roof at home restores some of the day's effort.
+        const sheltered = group && group.shelters * 5 >= group.members.length && distance2(agent, group) < 64;
+        agent.energy = clamp(agent.energy - 1.8 + (sheltered ? 3 : 0), 0, 100);
         agent.social = clamp(agent.social - (0.35 + agent.traits.sociability * 0.45), 0, 100);
         this._eat(agent, group);
         endureConditions(this, agent, group);
-        if (!considerCivilization(this, agent, group)) this._act(agent, group);
+        if (!(agent._courtship && this._court(agent, group)) && !considerCivilization(this, agent, group)) this._act(agent, group);
         observeAction(this, agent);
         this._socialize(agent);
         if (agent.hunger > 65) agent.health -= 0.35 + (agent.hunger - 65) * 0.052;
@@ -804,6 +966,7 @@ export class Simulation {
       this._advanceSocieties();
       this.diplomacy.relations = this.diplomacy.relations.filter((relation) => this._groupMap.has(relation.a) && this._groupMap.has(relation.b));
       advanceCivilization(this);
+      advanceInfrastructure(this);
       if (this.day % 60 === 0) {
         for (const agent of this.agents) {
           for (const relation of agent._relations) if (this.day - relation.lastSeen > 60) relation.strength *= 0.92;
@@ -853,7 +1016,7 @@ export class Simulation {
       food += group.food;
       const society = group.civilization, farms = society.buildings.farm;
       if (!farms) continue;
-      const radius = Math.min(12, 3 + Math.ceil(Math.sqrt(farms) * 2));
+      const radius = farmRadius(group);
       const conversion = 2 * innovationEffects(this, group).food * (society.technologies.includes('irrigation') ? 1.4 : 1) * (society.technologies.includes('engineering') ? 1.35 : 1);
       for (let y = Math.max(0, Math.floor(group.y) - radius); y <= Math.min(this.height - 1, Math.floor(group.y) + radius); y++) {
         for (let x = Math.max(0, Math.floor(group.x) - radius); x <= Math.min(this.width - 1, Math.floor(group.x) + radius); x++) {
@@ -866,7 +1029,7 @@ export class Simulation {
     // Descriptive renewal estimate, never a birth condition. Count overlapping
     // cultivated land once, using the most efficient technology available there.
     for (const [index, conversion] of farmPlots) growth += this.tiles[index].fertility * 0.008 * conversion;
-    return { ...civilizationStats(this), ...innovationStats(this), ...diplomacyStats(this), ...psycheStats(this), population: this.agents.length, births: this.births, deaths: this.deaths, arrivals: this.arrivals, groups: this.groups.length, ...vitalStats(this), wealthGini: gini(this.agents.filter((a) => a.age >= 16).map((a) => a.wealth || 0)),
+    return { ...civilizationStats(this), ...innovationStats(this), ...diplomacyStats(this), ...infrastructureStats(this), ...psycheStats(this), population: this.agents.length, births: this.births, deaths: this.deaths, arrivals: this.arrivals, groups: this.groups.length, ...vitalStats(this), wealthGini: gini(this.agents.filter((a) => a.age >= 16).map((a) => a.wealth || 0)),
       food, happiness: happiness / (this.agents.length || 1), averageAge: age / (this.agents.length || 1), generation,
       carryingCapacity: Math.round(growth * this.config.abundance * 0.82 / 0.23 * (this.weather.droughtUntil > this.day ? 0.22 : this.weather.rainUntil > this.day ? 1.8 : 1) * (this.weather.winterUntil > this.day ? 0.25 : 1)) };
   }
@@ -880,9 +1043,9 @@ export class Simulation {
 
   snapshot() {
     return {
-      version: 6, seed: this.seed, day: this.day, width: this.width, height: this.height, config: { ...this.config },
+      version: 7, seed: this.seed, day: this.day, width: this.width, height: this.height, config: { ...this.config },
       regions: this.regions.map((region) => ({ ...region })), civilization: structuredClone(this.civilization),
-      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
+      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
       conditions: activeConditions(this), tiles: this.tiles.map((tile) => ({ ...tile })),
       agents: this.agents.map((agent) => {
         const { id, name, x, y, age, health, hunger, energy, social, happiness, groupId, partnerId, action, generation } = agent;
@@ -899,13 +1062,62 @@ export class Simulation {
     };
   }
 
+  /**
+   * A lighter observation for the browser. Everyone's position and outward state
+   * is included, but a full mind, inner life and relationships only for `detailId`.
+   * Generated ideas never change once recorded, so only those after
+   * `discoveriesFrom` are sent. Tiles are sent separately (see packTiles).
+   */
+  view({ detailId = null, discoveriesFrom = 0 } = {}) {
+    const { discoveries, ...innovation } = this.innovation;
+    return {
+      version: 7, seed: this.seed, day: this.day, width: this.width, height: this.height, config: { ...this.config },
+      regions: this.regions.map((region) => ({ ...region })), civilization: structuredClone(this.civilization),
+      innovation: { ...structuredClone(innovation), discoveriesFrom, discoveries: structuredClone(discoveries.slice(discoveriesFrom)) },
+      diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
+      conditions: activeConditions(this),
+      agents: this.agents.map((agent) => {
+        const { id, name, x, y, age, health, hunger, energy, social, happiness, groupId, partnerId, action, generation } = agent;
+        const outward = { id, name, x, y, age, health, hunger, energy, social, happiness, sex: agent.sex, attraction: agent.attraction, wealth: agent.wealth, traits: { ...agent.traits }, inventory: { ...agent.inventory },
+          groupId, partnerId, parentIds: [...agent.parentIds], children: [...agent.children], action, generation, knowledge: [...agent.knowledge], convictions: { ...agent.convictions } };
+        if (agent.id !== detailId) return { ...outward, lite: true, ideaCount: agent.ideas.length, mind: { role: agent.mind.role }, psyche: { thought: agent.psyche?.thought, expansion: agent.psyche?.expansion } };
+        return { ...outward, ideas: [...agent.ideas], mind: structuredClone(agent.mind), skills: { ...agent.skills }, psyche: structuredClone(agent.psyche), relations: agent._relations.map((relation) => ({ ...relation })) };
+      }),
+      // How many people in each society (0 for none) hold each idea, instead of everyone's list.
+      ideaHolders: this.agents.reduce((holders, agent) => {
+        const counts = holders[agent.groupId || 0] ||= {};
+        for (const id of agent.ideas) counts[id] = (counts[id] || 0) + 1;
+        return holders;
+      }, {}),
+      groups: this.groups.map((group) => {
+        const { id, name, color, x, y, food, wood, shelters, culture } = group;
+        return { id, name, color, x, y, members: [...group.members], food, wood, shelters, culture, civilization: structuredClone(group.civilization) };
+      }),
+      stats: this._stats(), history: this.history.map((point) => ({ ...point })), events: this.events.map((event) => ({ ...event })),
+    };
+  }
+
+  /** Tiles as typed arrays, one per field, cheap to transfer to the page; static fields on request. */
+  packTiles(includeStatic = false) {
+    const n = this.tiles.length, fields = {};
+    for (const key of TILE_FIELDS) {
+      const values = new Float32Array(n);
+      for (let i = 0; i < n; i++) values[i] = this.tiles[i][key] || 0;
+      fields[key] = values;
+    }
+    if (!includeStatic) return { length: n, fields };
+    const terrain = new Uint8Array(n), elevation = new Float32Array(n), fertility = new Float32Array(n);
+    for (let i = 0; i < n; i++) { terrain[i] = TERRAIN.indexOf(this.tiles[i].terrain); elevation[i] = this.tiles[i].elevation; fertility[i] = this.tiles[i].fertility; }
+    return { length: n, fields, terrain, elevation, fertility };
+  }
+
   serialize() {
     return {
-      format: 'common-ground-simulation', version: 6, seed: this.seed, day: this.day, width: this.width, height: this.height,
+      format: 'common-ground-simulation', version: 7, seed: this.seed, day: this.day, width: this.width, height: this.height,
       config: { ...this.config }, rngState: this.rngState, nextAgentId: this.nextAgentId, nextGroupId: this.nextGroupId, nextEventId: this.nextEventId,
       births: this.births, deaths: this.deaths, arrivals: this.arrivals, weather: { ...this.weather },
       regions: this.regions.map((region) => ({ ...region })), civilization: structuredClone(this.civilization),
-      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
+      innovation: structuredClone(this.innovation), diplomacy: structuredClone(this.diplomacy), infrastructure: structuredClone(this.infrastructure), psyche: structuredClone(this.psyche), culture: structuredClone(this.culture), vital: structuredClone(this.vital),
       tiles: this.tiles.map((tile) => ({ ...tile })),
       agents: this.agents.map((agent) => ({ ...agent, mind: structuredClone(agent.mind), psyche: structuredClone(agent.psyche), skills: { ...agent.skills }, knowledge: [...agent.knowledge], ideas: [...agent.ideas], convictions: { ...agent.convictions }, traits: { ...agent.traits }, inventory: { ...agent.inventory },
         parentIds: [...agent.parentIds], children: [...agent.children], _relations: agent._relations.map((relation) => ({ ...relation })) })),
@@ -933,12 +1145,13 @@ function restore(raw) {
   const id = (value, field) => number(value, field, 1, Number.MAX_SAFE_INTEGER - 1, true);
   const optionalId = (value, field) => value === null ? null : id(value, field);
   object(raw, 'root');
-  if (raw.format !== 'common-ground-simulation' || ![1, 2, 3, 4, 5, 6].includes(raw.version)) fail('format or version');
+  if (raw.format !== 'common-ground-simulation' || ![1, 2, 3, 4, 5, 6, 7].includes(raw.version)) fail('format or version');
   const legacy = raw.version === 1;
   const openWorld = raw.version >= 3;
   const innerLives = raw.version >= 4;
   const materialWorld = raw.version >= 5;
   const lifeCourse = raw.version >= 6;
+  const modernWorld = raw.version >= 7;
   const dimensions = Object.entries(WORLD_SIZES).find(([, size]) => size.width === raw.width && size.height === raw.height);
   if (!dimensions || (legacy && dimensions[0] !== 'compact')) fail('world dimensions');
   const sim = Object.create(Simulation.prototype);
@@ -971,6 +1184,9 @@ function restore(raw) {
     }
     restored.soil = openWorld ? number(tile.soil, 'tile soil', 0, 1) : restored.fertility;
     if (materialWorld) for (const key of TILE_RESOURCES) restored[key] = number(tile[key], `tile ${key}`, 0, 1);
+    // How much people have dug and built on a tile; absent until they first do.
+    if (tile.worked !== undefined) restored.worked = number(tile.worked, 'tile worked', 0, 1);
+    if (modernWorld) for (const key of DEPOSITS) restored[key] = number(tile[key], `tile ${key}`, 0, 1);
     return restored;
   });
   if (sim.tiles.length !== sim.width * sim.height || !sim.tiles.some((tile) => tile.terrain !== 'water')) fail('world dimensions or habitable land');
@@ -978,6 +1194,9 @@ function restore(raw) {
     // Older worlds gain deposits from the same seeded noise used for new worlds.
     const shore = shoreMask(sim);
     for (let i = 0; i < sim.tiles.length; i++) Object.assign(sim.tiles[i], generateResources(sim, i, shore[i]));
+  } else if (!modernWorld) {
+    // Version 6 worlds gain coal and uranium from the same seeded noise as new worlds.
+    for (let i = 0; i < sim.tiles.length; i++) Object.assign(sim.tiles[i], generateDeposits(sim, i));
   }
   const uniqueIds = (values, field, max) => {
     const ids = array(values, field, max).map((value) => id(value, field));
@@ -987,6 +1206,7 @@ function restore(raw) {
   initializeCivilization(sim);
   initializeInnovation(sim);
   initializeDiplomacy(sim);
+  initializeInfrastructure(sim);
   initializeGlobalPsyche(sim);
   initializeGlobalCulture(sim);
   sim._restoreVersion = raw.version;
@@ -1005,6 +1225,7 @@ function restore(raw) {
       _stress: number(a._stress, 'stress', 0, 200), _homeDays: number(a._homeDays, 'home duration', 0, 1e9, true),
       ...(lifeCourse ? { sex: ['female', 'male'].includes(a.sex) ? a.sex : fail('sex'), attraction: ['different', 'same', 'both'].includes(a.attraction) ? a.attraction : fail('attraction'), wealth: number(a.wealth, 'wealth', 0, 1e12) } : { wealth: 0 }),
       _wanderX: number(a._wanderX, 'destination x', 0, sim.width), _wanderY: number(a._wanderY, 'destination y', 0, sim.height),
+      _courtship: a._courtship == null ? null : { groupId: id(object(a._courtship, 'courtship').groupId, 'courtship society'), since: number(a._courtship.since, 'courtship start', 0, sim.day, true) },
       _relations: array(a._relations, 'relationships', 12).map((r) => {
         object(r, 'relationship');
         const relation = { id: id(r.id, 'relationship ID'), strength: number(r.strength, 'relationship strength', 0, 1), lastSeen: number(r.lastSeen, 'encounter day', 0, sim.day, true) };
@@ -1016,7 +1237,7 @@ function restore(raw) {
     if (agent.id >= sim.nextAgentId || agent.parentIds.some((value) => value >= agent.id) || agent.children.some((value) => value <= agent.id || value >= sim.nextAgentId)) fail('genealogy or agent sequence');
     if (new Set(agent._relations.map((r) => r.id)).size !== agent._relations.length) fail('duplicate relationships');
     if (a._deathCause !== undefined) {
-      if (!['war', 'plague', 'disaster', 'childhood illness', 'old age', 'illness', 'an accident', 'epidemic'].includes(a._deathCause)) fail('death cause');
+      if (!['war', 'nuclear war', 'radiation', 'plague', 'disaster', 'childhood illness', 'old age', 'illness', 'an accident', 'epidemic'].includes(a._deathCause)) fail('death cause');
       agent._deathCause = a._deathCause;
     }
     return agent;
@@ -1043,12 +1264,14 @@ function restore(raw) {
     if (agent.groupId !== null && !membership.get(agent.groupId)?.has(agent.id)) fail('agent membership');
     if (agent.partnerId !== null && (agent.partnerId === agent.id || sim._agentMap.get(agent.partnerId)?.partnerId !== agent.id)) fail('partnership');
     for (const relation of agent._relations) if (relation.id === agent.id || !sim._agentMap.has(relation.id)) fail('relationship reference');
+    if (agent._courtship && agent._courtship.groupId >= sim.nextGroupId) fail('courtship society');
   }
   // Registries precede cognition/messages because those records can reference
   // generated discoveries. Legacy migrations add these without consuming RNG.
   if (openWorld) {
     sim.innovation = restoreInnovation(raw.innovation, sim);
     sim.diplomacy = restoreDiplomacy(raw.diplomacy, sim);
+    sim.infrastructure = restoreInfrastructure(raw.infrastructure, sim);
   }
   if (legacy) {
     // New inherited cognition is deterministic, while every saved original field
