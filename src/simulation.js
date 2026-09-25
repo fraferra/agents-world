@@ -11,8 +11,8 @@ import { drawOnWealth, bequeath, shareWealth, standing, gini } from './economy.j
 import { TILE_RESOURCES, DEPOSITS, shoreMask, generateResources, generateDeposits, renew } from './resources.js';
 import { initializeGlobalCulture, initializeCulture, advanceCulture, cultureLabel, customModifiers, restoreGlobalCulture, restoreCulture } from './culture.js';
 import { considerExpansion, considerFission } from './expansion.js';
-import { establishKinship } from './diplomacy.js';
-import { initializeInfrastructure, advanceInfrastructure, infrastructureStats, restoreInfrastructure, linkBetween, seafaring, reachable } from './infrastructure.js';
+import { establishKinship, establishColony } from './diplomacy.js';
+import { initializeInfrastructure, advanceInfrastructure, infrastructureStats, restoreInfrastructure, linkBetween, seafaring, reachable, sameLand } from './infrastructure.js';
 import { initializeBreakthroughs, advanceBreakthroughs, breakthroughStats, restoreBreakthroughs } from './breakthroughs.js';
 import { initializeEnterprise, advanceEnterprise, enterpriseStats, restoreEnterprise } from './enterprise.js';
 import { initializePolity, advancePolity, polityStats, restorePolity } from './polity.js';
@@ -279,6 +279,27 @@ export class Simulation {
       lands.depth = depth;
     }
     return lands.depth[Math.floor(clamp(y, 0, this.height - 0.001)) * this.width + Math.floor(clamp(x, 0, this.width - 0.001))];
+  }
+
+  /** A landing place on other land across the water, within `reach` of `from`, or null. */
+  _voyageTarget(from, reach) {
+    const lands = this._landmasses(), home = lands.label[Math.floor(from.y) * this.width + Math.floor(from.x)];
+    // Each landmass keeps a few sample points (derived once per world): choose among those of other lands in reach.
+    if (!lands.samples) {
+      lands.samples = [];
+      const seen = new Map();
+      for (let i = 0; i < lands.label.length; i++) {
+        const label = lands.label[i];
+        if (label < 0) continue;
+        const count = (seen.get(label) || 0) + 1; seen.set(label, count);
+        const stride = Math.max(1, Math.floor(lands.sizes[label] / 12));
+        if (count % stride === 1 || stride === 1) lands.samples.push({ label, x: i % this.width + 0.5, y: Math.floor(i / this.width) + 0.5 });
+      }
+    }
+    const options = lands.samples.filter((point) => point.label !== home && Math.hypot(point.x - from.x, point.y - from.y) <= reach);
+    if (!options.length) return null;
+    const point = options[Math.floor(this._random() * options.length)];
+    return { x: point.x, y: point.y };
   }
 
   /** The nearest grassland or woodland on the main continent. */
@@ -664,7 +685,10 @@ export class Simulation {
     if (arrived) this._survey(agent);
     if (arrived || this._random() < 0.06) {
       const reach = 16 + agent.traits.curiosity * 44;
-      const target = this._landNear(agent.x + (this._random() - 0.5) * reach, agent.y + (this._random() - 0.5) * reach);
+      // With boats, the curious sometimes paddle or sail across to land they can see beyond the water.
+      const vessel = seafaring(group);
+      const voyage = vessel.kind && this._random() < 0.08 * (0.5 + agent.traits.curiosity) ? this._voyageTarget(agent, Math.min(vessel.reach, 40)) : null;
+      const target = voyage || this._landNear(agent.x + (this._random() - 0.5) * reach, agent.y + (this._random() - 0.5) * reach);
       agent._wanderX = target.x; agent._wanderY = target.y;
     }
     this._move(agent, { x: agent._wanderX, y: agent._wanderY }, 0.9);
@@ -1040,11 +1064,22 @@ export class Simulation {
       const result = considerExpansion(this, group, surroundings(this, group), (site, settlers) => this._foundColony(site, settlers));
       if (!result) continue;
       const { colony, leader, settlers } = result;
-      establishKinship(this, group, colony);
+      this._bindColony(group, colony);
       const region = this.regions.reduce((best, candidate) => distance2(candidate, colony) < distance2(best, colony) ? candidate : best, this.regions[0]);
       this._updateCulture(colony);
       this._event('migration', `Pioneers led by ${leader.name} leave ${group.name} to found ${colony.name} near ${region.name} (${settlers.length} people).`, { groupId: colony.id, agentId: leader.id });
     }
+  }
+
+  /**
+   * A new colony's tie to its mother: a colony across the sea, or one founded by a
+   * hierarchical society or a country, is a tributary; otherwise allied kin.
+   */
+  _bindColony(mother, colony) {
+    const overseas = !sameLand(this, mother, colony);
+    const ruled = overseas || (mother.civilization.culture?.norms.hierarchy ?? 0) >= 0.5 || this.polity?.countries.some((country) => country.members.includes(mother.id));
+    if (ruled) establishColony(this, mother, colony, overseas);
+    else establishKinship(this, mother, colony);
   }
 
   _foundColony(site, settlers) {

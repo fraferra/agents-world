@@ -63,12 +63,13 @@ function chooseSite(sim, group, near) {
   }
   // Seafaring peoples also look across the water, to islands their ships can reach.
   const voyage = seafaring(group), lands = sim._landmasses(), home = lands.label[Math.floor(group.y) * sim.width + Math.floor(group.x)];
-  const overseas = voyage.reach >= 60 ? 16 : 0;
+  const overseas = voyage.reach >= 60 ? 16 : voyage.reach >= 10 ? 8 : 0;
   for (let attempt = 0; attempt < 36 + Math.min(12, remembered.length) + overseas; attempt++) {
     const scouted = attempt < remembered.length && attempt < 12 ? remembered[attempt] : null;
     const abroad = attempt >= 36 + Math.min(12, remembered.length);
     const angle = sim._random() * Math.PI * 2, range = scouted ? scouted.range : abroad ? 20 + sim._random() * Math.min(voyage.reach, 160) : reach + sim._random() * 22;
-    const point = scouted ? sim._landNear(scouted.x, scouted.y) : sim._landNear(group.x + Math.cos(angle) * range, group.y + Math.sin(angle) * range);
+    const across = abroad ? sim._voyageTarget(group, Math.min(voyage.reach, 160)) : null;
+    const point = scouted ? sim._landNear(scouted.x, scouted.y) : across || sim._landNear(group.x + Math.cos(angle) * range, group.y + Math.sin(angle) * range);
     if (distance(point, group) < 12) continue;
     // Across the water only with boats that can make the crossing.
     const there = lands.label[Math.floor(point.y) * sim.width + Math.floor(point.x)];
@@ -114,7 +115,8 @@ export function considerExpansion(sim, group, near, found) {
   // ...until a society develops the institutions and means to settle new land: then it expands more and more.
   const rooted = Math.min(.25, Object.values(civ.buildings).reduce((a, b) => a + b, 0) * .015) * (1 - grown * 2);
   // Ships open the islands: a seafaring people sees empty land across the water as opportunity.
-  const venture = seafaring(group).reach >= 60 ? .14 + culture.norms.expansion * .1 + culture.norms.mercantile * .06 : 0;
+  const reachAcross = seafaring(group).reach;
+  const venture = reachAcross >= 60 ? .14 + culture.norms.expansion * .1 + culture.norms.mercantile * .06 : reachAcross >= 10 ? .05 + culture.norms.expansion * .05 : 0;
   const desire = culture.norms.expansion * .3 + culture.pressure * .35 + eager * .2 + (leader?.psyche?.expansion ?? .4) * .15 * (.5 + culture.norms.hierarchy) + (civ.buildings.hall ? .08 : 0) - rooted + venture + grown;
   if (desire < .36 || sim._random() >= (desire - .32) * .5) return null;
   const site = chooseSite(sim, group, near);

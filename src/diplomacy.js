@@ -64,6 +64,14 @@ export function establishKinship(sim, parent, colony) {
   sim.diplomacy.treaties++;
 }
 
+/** A colony founded as a dependency: it owes its mother tribute from the start, on good terms. */
+export function establishColony(sim, mother, colony, overseas = false) {
+  const r = relation(sim, mother, colony, true);
+  r.trust = .5; r.tension = 5; r.status = 'tributary'; r.overlord = mother.id; r.since = sim.day; r.lastContact = sim.day; r.colonial = true;
+  r.reason = `${colony.name} was founded ${overseas ? 'across the sea ' : ''}as a colony of ${mother.name} and pays it tribute.`;
+  sim._event('diplomacy', `${colony.name} is founded as a colony of ${mother.name}${overseas ? ' across the sea' : ''} and owes it tribute.`, { groupId: colony.id });
+}
+
 /** The standing relation between two societies, if they have met. */
 export function relationBetween(sim, a, b) { return a && b && a.id !== b.id ? relation(sim, a, b) || null : null; }
 
@@ -122,7 +130,7 @@ function situation(sim, group, effects) {
 }
 function setStatus(sim, r, status, a, b, reason) {
   r.status = status; r.since = sim.day; r.reason = reason;
-  delete r.overlord;
+  delete r.overlord; delete r.colonial;
   if (status === 'war') { r.warDays = 0; sim.diplomacy.warsStarted++; }
   else if (status === 'alliance' || status === 'truce') sim.diplomacy.treaties++;
   const type = status === 'war' ? 'war' : status === 'truce' ? 'peace' : 'diplomacy';
@@ -228,7 +236,7 @@ function considerNuclearStrike(sim, r, a, b, sa, sb, ea, eb) {
  * store and its leader, and breeds resentment in the tributary.
  */
 function subjugate(sim, r, overlord, vassal, reason) {
-  r.status = 'tributary'; r.overlord = overlord.id; r.since = sim.day; r.warDays = 0; r.reason = reason;
+  r.status = 'tributary'; r.overlord = overlord.id; r.since = sim.day; r.warDays = 0; r.reason = reason; delete r.colonial;
   r.tension = Math.max(r.tension, 35); r.trust = Math.min(r.trust, -.2);
   sim.diplomacy.subjugations = (sim.diplomacy.subjugations || 0) + 1;
   const culture = overlord.civilization.culture;
@@ -271,11 +279,14 @@ function tributaryMonth(sim, r, a, b, sa, sb, contact) {
   r.lastContact = sim.day;
   // Tribute breeds resentment, faster where the tributary is martial and proud.
   const pride = vassal.civilization.culture?.norms.martial ?? .5;
-  r.tension = clamp(r.tension + .4 + pride * .6, 0, 100);
+  // Colonists bound by kinship resent tribute far more slowly than a conquered people.
+  r.tension = clamp(r.tension + (.4 + pride * .6) * (r.colonial ? .3 : 1), 0, 100);
   r.trust = clamp(r.trust - .005, -1, 1);
   // Rebellion: when the tributary has grown strong, or its overlord is busy with another war.
   const busy = sim.diplomacy.relations.some(other => other !== r && other.status === 'war' && (other.a === overlord.id || other.b === overlord.id));
-  const odds = sv.power > so.power * .8 ? .3 : busy && sv.power > so.power * .45 ? .12 : sv.power > so.power * .6 ? .04 : 0;
+  // A colony rises only once it is as strong as its mother (or clearly strong while she is at war) and resentment has set in.
+  const odds = r.colonial ? (r.tension < 45 ? 0 : sv.power > so.power ? .2 : busy && sv.power > so.power * .7 ? .08 : 0)
+    : sv.power > so.power * .8 ? .3 : busy && sv.power > so.power * .45 ? .12 : sv.power > so.power * .6 ? .04 : 0;
   if (odds && sim._random() < odds * (.4 + r.tension / 100) * (.6 + pride)) {
     r.tension = Math.max(r.tension, 70);
     setStatus(sim, r, 'war', a, b, `${vassal.name} rises against its overlord ${overlord.name}.`);
@@ -365,7 +376,8 @@ export function advanceDiplomacy(sim) {
       continue;
     }
     if (r.status === 'tributary') {
-      if (sim.day % 30 === (Math.max(r.a, r.b)) % 30) tributaryMonth(sim, r, a, b, sa, sb, contact);
+      // Tribute travels as far as roads, routes or boats can carry it.
+      if (sim.day % 30 === (Math.max(r.a, r.b)) % 30) tributaryMonth(sim, r, a, b, sa, sb, contact || reachable(sim, a, b));
       continue;
     }
     if (sim.day % 12 !== 0 || !contact) continue;
@@ -443,7 +455,8 @@ export function restoreDiplomacy(raw, sim) {
     if (r.status === 'tributary') {
       if (r.overlord !== a && r.overlord !== b) bad('overlord');
       state.relations.at(-1).overlord = r.overlord;
-    } else if (r.overlord !== undefined) bad('overlord');
+      if (r.colonial === true) state.relations.at(-1).colonial = true;
+    } else if (r.overlord !== undefined || r.colonial !== undefined) bad('overlord');
   }
   // A society pays tribute to one overlord at most.
   const vassals = state.relations.filter(r => r.status === 'tributary').map(r => r.overlord === r.a ? r.b : r.a);

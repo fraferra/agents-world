@@ -9,7 +9,7 @@ import { TECHNOLOGIES } from './civilization.js';
 import { proposeFrontier, adoptBreakthrough, breakthroughById, canPushFrontier } from './breakthroughs.js';
 import { foundCompany, SECTORS, ownsCompany } from './enterprise.js';
 import { callElection, proclaim, secede } from './polity.js';
-import { declare, overlordOf, establishKinship } from './diplomacy.js';
+import { declare, overlordOf } from './diplomacy.js';
 import { reachable } from './infrastructure.js';
 import { initializeCulture } from './culture.js';
 
@@ -353,7 +353,7 @@ const societyHandlers = {
     const food = group.food * .25, wood = group.wood * .25;
     group.food -= food; colony.food += food; group.wood -= wood; colony.wood += wood;
     if (group.civilization.culture) initializeCulture(sim, colony, group);
-    establishKinship(sim, group, colony);
+    sim._bindColony(group, colony);
     for (const agent of settlers) { agent._wanderX = site.x; agent._wanderY = site.y; }
     sim._event('migration', `Settlers from ${group.name} set out to found ${colony.name} in ${target.name} (${settlers.size} people).`, { groupId: colony.id });
   },

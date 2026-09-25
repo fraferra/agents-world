@@ -3,7 +3,7 @@
  */
 import { attemptInnovation, reflectBelief, spreadIdeas, innovationEffects, knowsIdea } from './innovation.js';
 import { tradeAccess, recordTrade } from './diplomacy.js';
-import { routeFactor, plannedRoute } from './infrastructure.js';
+import { routeFactor, plannedRoute, seafaring } from './infrastructure.js';
 import { advances, canPushFrontier, proposeFrontier, completeFrontier, restoreSocietyFrontier } from './breakthroughs.js';
 import { ownsCompany } from './enterprise.js';
 import { leadsParty } from './polity.js';
@@ -515,7 +515,10 @@ function harvestAnimals(sim, agent, group, kind) {
 /** A scouting journey: head for distant land, note what is there, then choose the next horizon. */
 function scout(sim, agent, group) {
   const target = { x: agent._wanderX, y: agent._wanderY };
-  if (Math.hypot(target.x - group.x, target.y - group.y) < 14 || distance(agent, target) < 1.5) {
+  // A destination near home is worth scouting only if it lies across the water.
+  const lands = sim._landmasses(), landOf = point => lands.label[Math.floor(point.y) * sim.width + Math.floor(point.x)];
+  const trivial = Math.hypot(target.x - group.x, target.y - group.y) < 14 && landOf(target) === landOf(group);
+  if (trivial || distance(agent, target) < 1.5) {
     if (distance(agent, target) < 1.5) {
       // Survey the surroundings and remember the best of each resource.
       let noted = 0;
@@ -528,13 +531,27 @@ function scout(sim, agent, group) {
         if (best && value > .4) { rememberPlace(sim, agent, kind, best.x, best.y, value); noted++; }
       }
       outcome = noted ? .5 : .05;
+      // First landfall on land this society has never reached.
+      const here = landOf(agent);
+      const civ = group.civilization;
+      civ.landsKnown ||= [lands.label[Math.floor(group.y) * sim.width + Math.floor(group.x)]];
+      if (here >= 0 && !civ.landsKnown.includes(here)) {
+        civ.landsKnown.push(here);
+        const region = sim.regions.reduce((best, candidate) => Math.hypot(candidate.x - agent.x, candidate.y - agent.y) < Math.hypot(best.x - agent.x, best.y - agent.y) ? candidate : best, sim.regions[0]);
+        sim._event('migration', `${agent.name} of ${group.name} makes landfall on unknown shores near ${region.name}.`, { agentId: agent.id, groupId: group.id });
+        appraise(sim, agent, 'discovery', { name: `the shores of ${region.name}`, activity: 'pioneer' });
+        outcome = 1;
+      }
     }
+    // With boats, scouts often sail out to land across the water within reach.
+    const vessel = seafaring(group);
+    const voyage = vessel.kind && sim._random() < .5 ? sim._voyageTarget(group, Math.min(vessel.reach, 120)) : null;
     const angle = sim._random() * Math.PI * 2, range = 20 + sim._random() * 45;
-    const next = sim._landNear(group.x + Math.cos(angle) * range, group.y + Math.sin(angle) * range);
+    const next = voyage || sim._landNear(group.x + Math.cos(angle) * range, group.y + Math.sin(angle) * range);
     agent._wanderX = next.x; agent._wanderY = next.y;
   }
   sim._move(agent, { x: agent._wanderX, y: agent._wanderY }, 1.15);
-  agent.action = 'scouting distant land';
+  agent.action = agent._afloat ? 'exploring by boat' : 'scouting distant land';
   agent.energy = clamp(agent.energy - 2.5, 0, 100);
   experience(agent, 'leadership', .05); experience(agent, 'foraging', .1);
 }
@@ -1490,7 +1507,9 @@ export function restoreSociety(rawGroup, sim) {
     economy = { value: numeric(e.value, 'economic value', 1e15), output: numeric(e.output, 'economic output', 1e15, -1), history: list(e.history, 'economic history', 20).map(value => numeric(value, 'economic record', 1e15)),
       yearDay: numeric(e.yearDay, 'economic year', sim.day, 0, true), boomDay: numeric(e.boomDay, 'boom day', sim.day, -1, true) };
   }
-  return { ...(economy ? { economy } : {}), ...restoreSocietyFrontier(raw, sim, known), technologies: known, research, project, stock: numbers(fill(raw.stock, stockKeys), stockKeys, 'stock', Number.MAX_SAFE_INTEGER), buildings, workforce, production: numbers(fill(raw.production, productionKeys), productionKeys, 'production', 1e15), diet, neglect, outbreakUntil, immuneUntil, ...(survey ? { survey } : {}), tradePartners: ids(raw.tradePartners, 'trade partners', Number.MAX_SAFE_INTEGER, sim.nextGroupId), lastTradeDay: numeric(raw.lastTradeDay, 'last trade day', sim.day, -1, true) };
+  let landsKnown;
+  if (raw.landsKnown !== undefined) landsKnown = list(raw.landsKnown, 'known lands', 100000).map(value => numeric(value, 'known land', 1e7, 0, true));
+  return { ...(economy ? { economy } : {}), ...(landsKnown ? { landsKnown } : {}), ...restoreSocietyFrontier(raw, sim, known), technologies: known, research, project, stock: numbers(fill(raw.stock, stockKeys), stockKeys, 'stock', Number.MAX_SAFE_INTEGER), buildings, workforce, production: numbers(fill(raw.production, productionKeys), productionKeys, 'production', 1e15), diet, neglect, outbreakUntil, immuneUntil, ...(survey ? { survey } : {}), tradePartners: ids(raw.tradePartners, 'trade partners', Number.MAX_SAFE_INTEGER, sim.nextGroupId), lastTradeDay: numeric(raw.lastTradeDay, 'last trade day', sim.day, -1, true) };
 }
 
 export function restoreCivilization(raw, sim) {
