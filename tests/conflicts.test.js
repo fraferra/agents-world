@@ -17,7 +17,7 @@ function region(count = 2, people = 10, seed = 'fields-of-war') {
   for (let index = 0; index < count; index++) {
     const spot = sim._landNear(center.x + index * 5, center.y);
     const members = sim.agents.slice(index * people, index * people + people);
-    const group = initializeSociety({ id: sim.nextGroupId++, name: ['Ashford Kin', 'Kell Hold', 'Moss Reach', 'Tarn Vale'][index], color: '#809260', ...spot, members: members.map(agent => agent.id), food: 120, wood: 20, shelters: 4, culture: 'Kinship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
+    const group = initializeSociety({ id: sim.nextGroupId++, name: ['Ashford Kin', 'Kell Hold', 'Moss Reach', 'Tarn Vale', 'Wren Ford', 'Holt End'][index], color: '#809260', ...spot, members: members.map(agent => agent.id), food: 120, wood: 20, shelters: 4, culture: 'Kinship', _foundedDay: 0, _lastMoveDay: 0, _shortageDays: 0 });
     initializeGroupIdeas(group);
     sim.groups.push(group); sim._groupMap.set(group.id, group);
     for (const agent of members) Object.assign(agent, spot, { age: 30, _ageDays: 3600, health: 100, hunger: 0, groupId: group.id });
@@ -96,6 +96,52 @@ test('allies honour their alliance and a local war can widen', () => {
   declare(sim, a, b, 'truce', 'Envoys meet.');
   assert.notEqual(war.end, null);
   assert.equal(relationBetween(sim, a, c).status, 'truce');
+});
+
+test('a war between countries involves every settlement of both, including those that join mid-war', () => {
+  const { sim, groups: [a1, a2, b1, b2, late] } = region(5, 6);
+  sim._random = () => .99;
+  const country = (id, name, capital, members) => ({ id, name, capitalId: capital.id, members: members.map(group => group.id), government: 'republic', founded: 0, color: '#809260' });
+  sim.polity.countries.push(country('country-1', 'Ashford Republic', a1, [a1, a2]), country('country-2', 'Moss Union', b1, [b1, b2]));
+  sim.polity.nextCountry = 3;
+  sim.day = 12; advanceDiplomacy(sim);
+  declare(sim, a2, b2, 'war', 'A border incident.');
+  const war = sim.diplomacy.wars[0];
+  assert.equal(war.name, 'War of the Ashford Republic and the Moss Union');
+  assert.deepEqual(war.countries, ['country-1', 'country-2']);
+  assert.deepEqual([...war.attackers].sort(), [a1.id, a2.id].sort());
+  assert.deepEqual([...war.defenders].sort(), [b1.id, b2.id].sort());
+  for (const x of [a1, a2]) for (const y of [b1, b2]) {
+    assert.equal(relationBetween(sim, x, y).status, 'war', `${x.name} fights ${y.name}`);
+    assert.equal(relationBetween(sim, x, y).warId, war.id);
+  }
+  assert.ok(warsOf(sim, a1).includes(war), 'the capital, not party to the incident, is at war too');
+  // A settlement that joins a belligerent country is drawn in at the next muster.
+  sim.polity.countries[1].members.push(late.id);
+  warDay(sim, war); advanceDiplomacy(sim);
+  assert.ok(war.defenders.includes(late.id));
+  assert.equal(relationBetween(sim, a1, late).status, 'war');
+  // A member far from any enemy stays at war, though it cannot fight.
+  const home = { x: late.x, y: late.y };
+  Object.assign(late, sim._mainlandNear(late.x + 80, late.y));
+  sim.day++; advanceDiplomacy(sim);
+  assert.equal(relationBetween(sim, a1, late).status, 'war');
+  assert.ok(war.defenders.includes(late.id));
+  Object.assign(late, home);
+  // If the settlement that led the defence falls, its country fights on under its capital.
+  for (const id of b2.members) sim._agentMap.get(id).groupId = b1.id;
+  b1.members.push(...b2.members); b2.members = [];
+  sim.groups = sim.groups.filter(group => group !== b2); sim._groupMap.delete(b2.id);
+  sim.day++; advanceDiplomacy(sim);
+  assert.equal(war.end, null, 'the war goes on');
+  assert.equal(war.defender, b1.id, 'the capital leads the defence');
+  // One peace between the leaders ends it for everyone.
+  declare(sim, a2, b1, 'truce', 'Envoys meet.');
+  assert.notEqual(war.end, null);
+  for (const x of [a1, a2]) for (const y of [b1, late]) assert.equal(relationBetween(sim, x, y).status, 'truce');
+  delete sim._random;
+  const saved = sim.serialize();
+  assert.deepEqual(Simulation.deserialize(structuredClone(saved)).serialize(), saved);
 });
 
 test('a tributary rising fights a war of independence; winning it frees it', () => {

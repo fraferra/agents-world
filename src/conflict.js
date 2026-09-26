@@ -121,10 +121,16 @@ function mineralName(sim, a, b) {
   return Object.entries(totals).sort((x, y) => y[1] - x[1])[0][0];
 }
 
-function warName(sim, attacker, defender, cause, mineral) {
+function warName(sim, attacker, defender, cause, mineral, countries = [null, null]) {
   const pair = [attacker.id, defender.id];
   const earlier = wars(sim).filter(war => pair.includes(war.attacker) && pair.includes(war.defender)).length;
   const nth = ordinal(earlier);
+  // A war between countries is named for them.
+  const [ca, cd] = countries.map(id => countryById(sim, id));
+  if (ca && cd && cause !== 'independence') {
+    const between = wars(sim).filter(war => war.countries?.includes(ca.id) && war.countries?.includes(cd.id)).length;
+    return `${ordinal(between)}War of the ${ca.name} and the ${cd.name}`;
+  }
   const region = sim.regions?.length ? sim.regions.reduce((best, candidate) => distance(candidate, { x: (attacker.x + defender.x) / 2, y: (attacker.y + defender.y) / 2 }) < distance(best, { x: (attacker.x + defender.x) / 2, y: (attacker.y + defender.y) / 2 }) ? candidate : best, sim.regions[0]) : null;
   const pick = list => list[Math.floor(sim._random() * list.length)];
   switch (cause) {
@@ -152,8 +158,9 @@ export function openWar(sim, relation, attacker, defender, cause = 'grievance', 
   const state = sim.diplomacy;
   state.wars ||= []; state.nextWar ||= 1;
   if (!CAUSES[cause]) cause = 'grievance';
+  const countries = belligerentCountries(sim, attacker, defender);
   const war = {
-    id: `war-${state.nextWar++}`, name: warName(sim, attacker, defender, cause, detail.mineral), attacker: attacker.id, defender: defender.id,
+    id: `war-${state.nextWar++}`, name: warName(sim, attacker, defender, cause, detail.mineral, countries), attacker: attacker.id, defender: defender.id, countries,
     attackers: [attacker.id], defenders: [defender.id], cause, goal: CAUSES[cause].goal, reason: detail.reason || CAUSES[cause].label,
     start: sim.day, end: null, phase: 'campaign', phaseUntil: sim.day + 30 + Math.floor(sim._random() * 50),
     score: 0, battles: 0, casualties: [0, 0], weariness: [0, 0], strength: [peopleOf(sim, attacker).length, peopleOf(sim, defender).length],
@@ -170,39 +177,128 @@ export function openWar(sim, relation, attacker, defender, cause = 'grievance', 
   return war;
 }
 
-/** Allies, tributaries and compatriots of the warring sides may be drawn in. */
+/** The countries a war is fought between (by ID), when its leaders belong to different ones. */
+function belligerentCountries(sim, attacker, defender) {
+  const a = countryOf(sim, attacker), d = countryOf(sim, defender);
+  if (a && a === d) return [null, null];
+  return [a?.id ?? null, d?.id ?? null];
+}
+const countryById = (sim, id) => (sim.polity?.countries || []).find(country => country.id === id) || null;
+/** The distinct powers at war: each country counts once, as does each independent society. */
+function powers(sim, war, side) {
+  const country = countryById(sim, war.countries?.[side]);
+  const list = side === 0 ? war.attackers : war.defenders;
+  return (country ? 1 : 0) + list.filter(id => !country?.members.includes(id)).length;
+}
+
+/**
+ * Who fights. A war between countries involves every settlement of both: all
+ * members of each country join its side, including any that join the country
+ * while the war lasts. Beyond them, allies with strong trust and tributaries
+ * may be drawn in (at most three on a side). Every society on one side is then
+ * at war with every society on the other, so fighting breaks out wherever they meet.
+ */
 function widen(sim, war, join) {
   const attacker = sim._groupMap.get(war.attacker), defender = sim._groupMap.get(war.defender);
   if (!attacker || !defender || !join) return;
-  const invited = [];
-  for (const [leader, enemy, side] of [[defender, attacker, 'defenders'], [attacker, defender, 'attackers']]) {
-    const country = countryOf(sim, leader);
-    for (const other of sim.groups) {
-      if (war.attackers.includes(other.id) || war.defenders.includes(other.id) || war[side].length >= 3) continue;
-      const bond = join.relation(leader, other), hostile = join.relation(enemy, other);
-      if (hostile && ['alliance', 'war', 'tributary'].includes(hostile.status)) continue;
-      const compatriot = country && country.members.includes(other.id);
-      const allied = bond?.status === 'alliance' && bond.trust > .5;
-      const vassal = bond?.status === 'tributary' && bond.overlord === leader.id;
-      if (!(compatriot || allied || vassal) || !join.contact(other, enemy) || peopleOf(sim, other).filter(agent => agent.age >= 18).length < 3) continue;
-      const martial = other.civilization.culture?.norms.martial ?? .5;
-      // Most stay out; a people defends its own more readily than it joins an attack.
-      const odds = (compatriot || vassal ? .4 : .2) * (side === 'defenders' ? 1.2 : .6) * (.5 + martial * .8);
-      if (sim._random() < odds) invited.push([other, enemy, side, compatriot ? `fellow member of ${country.name}` : vassal ? `tributary of ${leader.name}` : `ally of ${leader.name}`]);
+  const joined = [];
+  const enlist = (other, side, bond) => {
+    war[side].push(other.id); war.names[other.id] = other.name;
+    war.strength[side === 'attackers' ? 0 : 1] += peopleOf(sim, other).length;
+    joined.push([other, side, bond]);
+  };
+  const taken = id => war.attackers.includes(id) || war.defenders.includes(id);
+  // Whole countries go to war together.
+  for (const [index, side] of [[0, 'attackers'], [1, 'defenders']]) {
+    const country = countryById(sim, war.countries?.[index]);
+    for (const id of country?.members || []) {
+      const other = sim._groupMap.get(id);
+      if (other && !taken(id)) enlist(other, side, `part of ${country.name}`);
     }
   }
-  for (const [other, enemy, side, bond] of invited) {
-    if (war[side].length >= 3) continue;
-    war[side].push(other.id); war.names[other.id] = other.name;
-    join.declare(other, enemy, war, `${other.name} joins ${war.name} as ${bond}.`);
+  // Allies and tributaries may choose to join, if the enemy is within reach.
+  const allies = side => war[side].filter(id => !countryById(sim, war.countries?.[side === 'attackers' ? 0 : 1])?.members.includes(id)).length - 1;
+  const invited = [];
+  for (const [leader, enemy, side] of [[defender, attacker, 'defenders'], [attacker, defender, 'attackers']]) {
+    for (const other of sim.groups) {
+      if (taken(other.id) || allies(side) >= 3 || countryOf(sim, other) && [war.countries?.[0], war.countries?.[1]].includes(countryOf(sim, other).id)) continue;
+      const bond = join.relation(leader, other), hostile = join.relation(enemy, other);
+      if (hostile && ['alliance', 'war', 'tributary'].includes(hostile.status)) continue;
+      const allied = bond?.status === 'alliance' && bond.trust > .5;
+      const vassal = bond?.status === 'tributary' && bond.overlord === leader.id;
+      if (!(allied || vassal) || !join.contact(other, enemy) || peopleOf(sim, other).filter(agent => agent.age >= 18).length < 3) continue;
+      const martial = other.civilization.culture?.norms.martial ?? .5;
+      // Most stay out; a people defends its own more readily than it joins an attack.
+      const odds = (vassal ? .4 : .2) * (side === 'defenders' ? 1.2 : .6) * (.5 + martial * .8);
+      if (sim._random() < odds) invited.push([other, side, vassal ? `tributary of ${leader.name}` : `ally of ${leader.name}`]);
+    }
   }
-  const total = war.attackers.length + war.defenders.length;
-  if (total >= 5 && war.attackers.length >= 2 && war.defenders.length >= 2 && !/Great War/.test(war.name)) {
+  for (const [other, side, bond] of invited) if (!taken(other.id) && allies(side) < 3) enlist(other, side, bond);
+  engage(sim, war, join);
+  // One line per joining society, not per pair of enemies.
+  const byCountry = new Map();
+  for (const [other, side, bond] of joined) {
+    const key = bond.startsWith('part of ') ? bond : null;
+    if (key) byCountry.set(key, [...(byCountry.get(key) || []), other]);
+    else sim._event('war', `${other.name} joins ${war.name} as ${bond}.`, { groupId: other.id });
+  }
+  for (const [bond, members] of byCountry) sim._event('war', `${members.length === 1 ? members[0].name : `${members.length} settlements`} ${bond.replace('part of', 'of')} ${members.length === 1 ? 'is' : 'are'} drawn into ${war.name}.`, { groupId: members[0].id });
+  const total = powers(sim, war, 0) + powers(sim, war, 1);
+  if (total >= 5 && powers(sim, war, 0) >= 2 && powers(sim, war, 1) >= 2 && !/Great War/.test(war.name)) {
     const great = wars(sim).filter(other => /Great War/.test(other.name)).length;
     const old = war.name;
     war.name = `${ordinal(great)}Great War`;
-    sim._event('war', `${old} widens into the ${war.name}: ${total} societies are now at war.`, { groupId: war.attacker });
+    sim._event('war', `${old} widens into the ${war.name}: ${total} powers are now at war.`, { groupId: war.attacker });
   }
+}
+
+/** Every society on one side at war with every society on the other, unless already fighting another war. */
+function engage(sim, war, join) {
+  for (const a of war.attackers) for (const d of war.defenders) {
+    const x = sim._groupMap.get(a), y = sim._groupMap.get(d);
+    if (!x || !y) continue;
+    const r = join.relation(x, y);
+    if (r?.status === 'war') continue;
+    join.declare(x, y, war, `${x.name} and ${y.name} are at war in ${war.name}.`, true);
+  }
+}
+
+/**
+ * When a side's leading settlement falls or empties in a war between countries,
+ * the country fights on: leadership passes to its capital, or to its largest
+ * remaining settlement. Returns whether the side still has a leader.
+ */
+export function succeed(sim, war, side, lost = null) {
+  const index = side === 'attackers' ? 0 : 1, key = index === 0 ? 'attacker' : 'defender';
+  if (!war.countries?.[index]) return false;
+  const remaining = war[side].filter(id => id !== lost && sim._groupMap.get(id)?.members.length);
+  if (!remaining.length) return false;
+  const capital = countryById(sim, war.countries[index])?.capitalId;
+  const next = remaining.includes(capital) ? capital : remaining.map(id => sim._groupMap.get(id)).sort((a, b) => b.members.length - a.members.length)[0].id;
+  if (next === war[key]) return true;
+  war[key] = next;
+  war[side] = war[side].filter(id => id !== lost);
+  sim._event('war', `${sim._groupMap.get(next).name} now leads its side in ${war.name}.`, { groupId: next });
+  return true;
+}
+
+/** Monthly: settlements that have joined a belligerent country since the war began are drawn in. */
+function mobilise(sim, war, join) {
+  if (!war.countries?.[0] && !war.countries?.[1]) return;
+  const before = war.attackers.length + war.defenders.length;
+  const fresh = [];
+  for (const [index, side] of [[0, 'attackers'], [1, 'defenders']]) {
+    const country = countryById(sim, war.countries[index]);
+    for (const id of country?.members || []) {
+      const other = sim._groupMap.get(id);
+      if (!other || war.attackers.includes(id) || war.defenders.includes(id)) continue;
+      war[side].push(id); war.names[id] = other.name; war.strength[index] += peopleOf(sim, other).length;
+      fresh.push([other, country]);
+    }
+  }
+  if (war.attackers.length + war.defenders.length === before) return;
+  engage(sim, war, join);
+  for (const [other, country] of fresh) sim._event('war', `${other.name}, now part of ${country.name}, is drawn into ${war.name}.`, { groupId: other.id });
 }
 
 /** Whether armies are in the field today: most fighting happens in campaigns. */
@@ -270,6 +366,8 @@ export function advanceWars(sim, hooks) {
     // Members lost to conquest, merger or collapse drop out.
     war.attackers = war.attackers.filter(id => sim._groupMap.has(id));
     war.defenders = war.defenders.filter(id => sim._groupMap.has(id));
+    // A fallen leading settlement is succeeded when its country fights on.
+    if ((!attacker && succeed(sim, war, 'attackers', war.attacker)) || (!defender && succeed(sim, war, 'defenders', war.defender))) continue;
     if (!attacker || !defender) {
       endWar(sim, war, !attacker && !defender ? null : attacker ? 'attackers' : 'defenders', 'collapse', attacker ? 'The defending society has ceased to exist.' : defender ? 'The attacking society has ceased to exist.' : 'Neither society survives.', hooks);
       continue;
@@ -282,6 +380,7 @@ export function advanceWars(sim, hooks) {
       if (campaign && war.battles > 0 && sim._random() < .4) sim._event('war', `A new campaign opens in ${war.name}.`, { groupId: war.attacker });
     }
     if (sim.day % 30 !== Number(war.id.slice(4)) % 30) continue;
+    mobilise(sim, war, hooks);
     const years = (sim.day - war.start) / YEAR;
     for (const side of [0, 1]) {
       const members = (side === 0 ? war.attackers : war.defenders).map(id => sim._groupMap.get(id)).filter(Boolean);
@@ -387,11 +486,17 @@ function settle(sim, war, winner, hooks) {
   }
   // Otherwise the loser pays: food and stores, more when it started the war and lost.
   const share = winner === 'attackers' ? (war.goal === 'plunder' ? .25 : .15) : .12;
-  const food = vanquished.food * share;
-  vanquished.food -= food; victor.food += food;
-  for (const key of ['tools', 'metal', 'goods', 'machines', 'electronics', 'coal']) {
-    const paid = (vanquished.civilization.stock[key] || 0) * share;
-    vanquished.civilization.stock[key] -= paid; victor.civilization.stock[key] += paid;
+  // The whole losing side pays; its leader most.
+  for (const id of winner === 'attackers' ? war.defenders : war.attackers) {
+    const payer = sim._groupMap.get(id);
+    if (!payer) continue;
+    const part = payer === vanquished ? share : share / 2;
+    const food = payer.food * part;
+    payer.food -= food; victor.food += food;
+    for (const key of ['tools', 'metal', 'goods', 'machines', 'electronics', 'coal']) {
+      const paid = (payer.civilization.stock[key] || 0) * part;
+      payer.civilization.stock[key] -= paid; victor.civilization.stock[key] += paid;
+    }
   }
   const norms = vanquished.civilization.culture?.norms;
   if (norms && winner === 'attackers' && war.goal === 'land') norms.expansion = round(clamp(norms.expansion - .08));
@@ -475,8 +580,12 @@ export function restoreWars(raw, sim) {
   const names = (value, members) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) bad('names');
     const entries = Object.entries(value);
-    if (entries.length > 12 || entries.some(([id, name]) => !/^[1-9]\d*$/.test(id) || Number(id) >= sim.nextGroupId)) bad('names');
+    if (entries.length > 400 || entries.some(([id, name]) => !/^[1-9]\d*$/.test(id) || Number(id) >= sim.nextGroupId)) bad('names');
     return Object.fromEntries(entries.map(([id, name]) => [id, text(name, 'name', 80)]));
+  };
+  const countriesOf = value => {
+    if (!Array.isArray(value) || value.length !== 2 || value.some(id => id !== null && !/^country-[1-9]\d*$/.test(id))) bad('countries');
+    return [...value];
   };
   return raw.map(war => {
     if (!war || typeof war !== 'object' || !/^war-[1-9]\d*$/.test(war.id) || ids.has(war.id)) bad('ID');
@@ -498,6 +607,7 @@ export function restoreWars(raw, sim) {
       phase: war.phase, phaseUntil: int(war.phaseUntil, 'phase end'), score: num(war.score, 'score', -100, 100), battles: int(war.battles, 'battles'),
       casualties: war.casualties.map(value => int(value, 'casualties')), weariness: war.weariness.map(value => num(value, 'weariness', 0, 3)), strength: war.strength.map(value => int(value, 'strength')),
       names: names(war.names, [...war.attackers, ...war.defenders]),
+      countries: war.countries === undefined ? [null, null] : countriesOf(war.countries),
       front: point(war.front, 'front'), sites: war.sites.map(site => ({ ...point(site, 'site'), day: int(site.day, 'site day', 0, sim.day) })), refugees: int(war.refugees, 'refugees'), outcome,
     };
   });

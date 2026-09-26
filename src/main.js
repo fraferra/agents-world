@@ -315,7 +315,14 @@ function renderConflicts(groups) {
   $('#civilization-summary').textContent = `${number(ongoing.length)} ${ongoing.length === 1 ? 'war' : 'wars'} under way · ${number(all.length - ongoing.length)} ended · ${number(deaths)} killed in recorded wars · ${number(refugees)} refugees`;
   const nameOf = (war, id) => snapshot.groups.find(group => group.id === id)?.name || war.names?.[id] || 'a vanished society';
   const colorOf = id => color(snapshot.groups.find(group => group.id === id)?.color);
-  const side = (war, list) => list.map(id => `<span class="conflict-party"><i class="society-dot" style="background:${colorOf(id)}"></i>${escape(nameOf(war, id))}</span>`).join('');
+  const party = (war, id) => `<span class="conflict-party"><i class="society-dot" style="background:${colorOf(id)}"></i>${escape(nameOf(war, id))}</span>`;
+  // A country's side is shown as the country, with how many of its settlements fight and who else joined it.
+  const side = (war, list, index) => {
+    const country = (snapshot.polity?.countries || []).find(entry => entry.id === war.countries?.[index]);
+    if (!country) return list.map(id => party(war, id)).join('');
+    const members = list.filter(id => country.members.includes(id)), others = list.filter(id => !country.members.includes(id));
+    return `<span class="conflict-party conflict-country"><i class="society-dot" style="background:${color(country.color)}"></i>${escape(country.name)}</span><span class="quiet-note">${number(members.length)} ${members.length === 1 ? 'settlement' : 'settlements'}</span>${others.map(id => party(war, id)).join('')}`;
+  };
   const years = war => ((war.end ?? snapshot.day) - war.start) / DAYS;
   const span = war => { const y = years(war); return y < 1 ? `${Math.max(1, Math.round(y * 12))} months` : `${y.toFixed(1)} years`; };
   const weary = (value, label) => `<div class="conflict-weariness"><span>${escape(label)}</span><span class="bar"><i style="width:${percent(Math.min(1.5, value) / 1.5 * 100)}%"></i></span></div>`;
@@ -324,7 +331,7 @@ function renderConflicts(groups) {
     const balance = 50 + war.score / 2;
     return `<article class="idea-card conflict-card ${war.end === null ? 'ongoing' : 'ended'}"><div class="idea-meta"><span>${war.end === null ? `⚔ ${war.phase === 'campaign' ? 'Campaign under way' : 'Lull in the fighting'}` : `Ended · ${escape(title(war.outcome?.terms || ''))}`}</span><span>${calendar(war.start).replace(/ · Day.*/, '')}${war.end === null ? ' – now' : ` – ${calendar(war.end).replace(/ · Day.*/, '').replace('Year ', '')}`} · ${span(war)}</span></div>
       <h3>${escape(war.name)}</h3>
-      <div class="conflict-sides"><div>${side(war, war.attackers.length ? war.attackers : [war.attacker])}</div><span class="versus">against</span><div>${side(war, war.defenders.length ? war.defenders : [war.defender])}</div></div>
+      <div class="conflict-sides"><div>${side(war, war.attackers.length ? war.attackers : [war.attacker], 0)}</div><span class="versus">against</span><div>${side(war, war.defenders.length ? war.defenders : [war.defender], 1)}</div></div>
       <p class="idea-description"><strong>Cause:</strong> ${escape(CAUSES[war.cause]?.label || title(war.cause))}. ${escape(war.reason)}<br><strong>Aim:</strong> ${escape(nameOf(war, war.attacker))} fights to ${escape(GOALS[war.goal] || war.goal)}.</p>
       <div class="conflict-balance" title="Balance of the war"><i style="width:${percent(balance)}%;background:${colorOf(war.attacker)}"></i><i style="width:${percent(100 - balance)}%;background:${colorOf(war.defender)}"></i></div>
       <p class="quiet-note">${lead ? `${escape(lead)} ${war.end === null ? 'has the upper hand' : 'had the upper hand'}` : 'Neither side has the advantage'} · ${number(war.battles)} battles · ${number(war.casualties[0])} and ${number(war.casualties[1])} dead${war.refugees ? ` · ${number(war.refugees)} refugees` : ''}</p>

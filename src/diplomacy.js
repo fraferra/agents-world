@@ -8,7 +8,7 @@ import { addWealth } from './economy.js';
 import { linkBetween, reachable } from './infrastructure.js';
 import { advances } from './breakthroughs.js';
 import { countryOf, defeatShock } from './polity.js';
-import { openWar, warOf, adoptWar, fighting, recordBattle, advanceWars, endWar, casusBelli, restoreWars } from './conflict.js';
+import { openWar, warOf, adoptWar, fighting, recordBattle, advanceWars, endWar, casusBelli, restoreWars, succeed } from './conflict.js';
 
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -142,12 +142,12 @@ function warHooks(sim) {
     relation: (x, y) => relation(sim, x, y),
     contact: (x, y) => inContact(sim, x, y),
     // A society drawn into a war by alliance, tribute or country.
-    declare: (other, enemy, war, reason) => {
+    declare: (other, enemy, war, reason, quiet = false) => {
       const r = relation(sim, other, enemy, true);
       r.tension = Math.max(r.tension, 75); r.trust = Math.min(r.trust, -.3);
       r.status = 'war'; r.since = sim.day; r.warDays = 0; r.reason = reason; r.warId = war.id; r.lastContact = sim.day;
       delete r.overlord; delete r.colonial;
-      sim._event('war', reason, { groupId: other.id });
+      if (!quiet) sim._event('war', reason, { groupId: other.id });
     },
     subjugate: (r, overlord, vassal, reason) => subjugate(sim, r, overlord, vassal, reason),
     conquer: (r, strong, weak) => conquer(sim, r, strong, weak),
@@ -429,7 +429,9 @@ export function advanceDiplomacy(sim) {
           // Small peoples are absorbed; larger ones, or those already under another, are made to pay tribute.
           const tribute = weak.members.length >= 8 && !overlordOf(sim, weak);
           const text = tribute ? `Defeated in war, ${weak.name} must send part of its harvest and goods to ${strong.name}.` : `${strong.name} overruns ${weak.name}.`;
-          if (principal(war, r)) endWar(sim, war, war.attackers.includes(strong.id) ? 'attackers' : 'defenders', tribute ? 'tribute' : 'conquest', text, warHooks(sim));
+          // In a war between countries, losing one settlement does not end the war if others fight on.
+          const weakSide = war?.attackers.includes(weak.id) ? 'attackers' : 'defenders';
+          if (principal(war, r) && !succeed(sim, war, weakSide, weak.id)) endWar(sim, war, weakSide === 'attackers' ? 'defenders' : 'attackers', tribute ? 'tribute' : 'conquest', text, warHooks(sim));
           else leaveWar(sim, war, r);
           if (tribute) subjugate(sim, r, strong, weak, text);
           else conquer(sim, r, strong, weak);
@@ -438,8 +440,14 @@ export function advanceDiplomacy(sim) {
       }
       // A side with no one of fighting age left (wounded included) is finished.
       const fightersA = sa.members.some(agent => agent.age >= 16), fightersB = sb.members.some(agent => agent.age >= 16);
+      // Settlements of warring countries stay at war though too far apart to fight; the war is theirs too.
+      const national = war && (war.countries?.[0] || war.countries?.[1]);
+      if (!contact && fightersA && fightersB && national) continue;
       if (!contact || !fightersA || !fightersB) {
         const text = !contact ? 'Distance has separated the armies.' : 'One side has no one left to fight.';
+        // A leading settlement with no one left to fight hands the lead to the rest of its country.
+        const spent = !fightersA ? a : !fightersB ? b : null, spentSide = spent && war?.attackers.includes(spent.id) ? 'attackers' : 'defenders';
+        if (principal(war, r) && spent && succeed(sim, war, spentSide, spent.id)) { r.tension = Math.min(r.tension, 45); setStatus(sim, r, 'truce', a, b, text); continue; }
         if (principal(war, r)) endWar(sim, war, !fightersA && fightersB ? (war.attackers.includes(b.id) ? 'attackers' : 'defenders') : !fightersB && fightersA ? (war.attackers.includes(a.id) ? 'attackers' : 'defenders') : null, contact ? 'collapse' : 'separation', text, warHooks(sim));
         else { r.tension = Math.min(r.tension, 45); r.trust = Math.max(r.trust, -.3); setStatus(sim, r, 'truce', a, b, text); }
       }
